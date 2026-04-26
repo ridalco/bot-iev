@@ -9,9 +9,8 @@ const { google } = require('googleapis');
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 const CLIENT_ID = '1497945827874967733';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;const GOOGLE_CREDENTIALS = require('./credentials.json');
-
-
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
+const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
 const CANAL_ASISTENCIA = 'dudas';
 const CANAL_ENTREGAS = 'entregas';
