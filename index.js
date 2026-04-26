@@ -20,6 +20,41 @@ const CANAL_RANKING = 'ranking';
 // Sistema de puntos en memoria
 const puntos = new Map(); // userId -> { nombre, pts, entregas, asistencias, preguntas }
 
+// Formulario de entregas guiado
+const formularioActivo = new Map(); // userId -> { paso, nombre, actividad, link }
+
+// Roles Discord por nivel de puntos
+const ROLES_PUNTOS = [
+  { nombre: 'Experto Digital', minPts: 200, emoji: '🏆' },
+  { nombre: 'Colaborador Activo', minPts: 100, emoji: '⭐' },
+  { nombre: 'Aprendiz', minPts: 50, emoji: '📚' },
+  { nombre: 'Novato', minPts: 0, emoji: '🌱' },
+];
+
+async function actualizarRolDiscord(member, pts) {
+  try {
+    const guild = member.guild;
+    // Buscar o crear roles
+    for (const rolDef of ROLES_PUNTOS) {
+      let rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
+      if (!rol) {
+        rol = await guild.roles.create({ name: rolDef.nombre, color: rolDef.nombre === 'Experto Digital' ? '#FFD700' : rolDef.nombre === 'Colaborador Activo' ? '#C0C0C0' : rolDef.nombre === 'Aprendiz' ? '#4FC3F7' : '#90A4AE', reason: 'Rol automático Bot IEV' });
+      }
+    }
+    // Quitar todos los roles de nivel
+    for (const rolDef of ROLES_PUNTOS) {
+      const rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
+      if (rol && member.roles.cache.has(rol.id)) await member.roles.remove(rol);
+    }
+    // Asignar el rol correspondiente
+    const rolCorrespondiente = ROLES_PUNTOS.find(r => pts >= r.minPts);
+    if (rolCorrespondiente) {
+      const rol = guild.roles.cache.find(r => r.name === rolCorrespondiente.nombre);
+      if (rol) await member.roles.add(rol);
+    }
+  } catch (e) { console.error('Error asignando rol:', e); }
+}
+
 function darPuntos(userId, nombre, tipo) {
   if (!puntos.has(userId)) puntos.set(userId, { nombre, pts: 0, entregas: 0, asistencias: 0, preguntas: 0 });
   const p = puntos.get(userId);
@@ -28,6 +63,7 @@ function darPuntos(userId, nombre, tipo) {
   if (tipo === 'entrega') { p.pts += 20; p.entregas++; }
   if (tipo === 'pregunta') { p.pts += 5; p.preguntas++; }
   puntos.set(userId, p);
+  return p;
 }
 
 function getRanking() {
@@ -249,25 +285,61 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.MessageCreate, async (message) => {
   if (message.author.bot) return;
 
-  // Corrección automática en canal entregas
-  if (message.channel.name === CANAL_ENTREGAS) {
-    const adjunto = message.attachments.first();
-    const tieneTexto = message.content.length > 150;
-    const tieneAdjunto = adjunto && adjunto.contentType?.includes('text');
+  // Formulario guiado en canal entregas
+  if (message.channel.name === CANAL_ENTREGAS && !message.author.bot) {
+    const userId = message.author.id;
+    const nombre = message.member?.displayName || message.author.username;
 
-    if (tieneTexto || tieneAdjunto) {
-      try {
-        message.channel.sendTyping();
-        const correccion = await corregirEntrega(message, adjunto);
-        if (correccion) {
-          darPuntos(message.author.id, message.member?.displayName || message.author.username, 'entrega');
-          const p = puntos.get(message.author.id);
-          const rol = getRol(p.pts);
-          await message.reply(`🤖 **Corrección automática del Bot IEV:**\n\n${correccion}\n\n*⚠️ Corrección orientativa. La nota final la define el profesor.*\n\n📤 +20 puntos por entregar | Total: **${p.pts} pts** ${rol.emoji}`);
-        }
-      } catch (e) {
-        console.error('Error corrección:', e);
+    // Si ya tiene formulario activo, procesar respuesta
+    if (formularioActivo.has(userId)) {
+      const form = formularioActivo.get(userId);
+
+      if (form.paso === 1) {
+        form.actividad = message.content;
+        form.paso = 2;
+        formularioActivo.set(userId, form);
+        await message.reply('📎 **Paso 2/3:** Pegá el link de tu trabajo (GitHub, Google Drive) o adjuntá el archivo directamente.');
+        return;
       }
+
+      if (form.paso === 2) {
+        form.link = message.content || (message.attachments.first()?.url || 'Sin link');
+        form.paso = 3;
+        formularioActivo.set(userId, form);
+        await message.reply('💬 **Paso 3/3:** ¿Querés agregar algún comentario sobre tu entrega? (o escribí "listo" para terminar)');
+        return;
+      }
+
+      if (form.paso === 3) {
+        form.comentario = message.content === 'listo' ? '' : message.content;
+        formularioActivo.delete(userId);
+
+        // Guardar y corregir
+        const resumen = `📋 **ENTREGA REGISTRADA**\n👤 Alumno: **${form.nombre}**\n📚 Actividad: **${form.actividad}**\n🔗 Link/Archivo: ${form.link}\n💬 Comentario: ${form.comentario || 'Ninguno'}`;
+        await message.channel.send(resumen);
+
+        // Dar puntos y actualizar rol
+        const p = darPuntos(userId, nombre, 'entrega');
+        const rol = getRol(p.pts);
+        await actualizarRolDiscord(message.member, p.pts);
+
+        // Corrección automática si hay texto
+        try {
+          message.channel.sendTyping();
+          const textoParaCorregir = `Actividad: ${form.actividad}. Link: ${form.link}. Comentario: ${form.comentario}`;
+          const correccion = await corregirEntrega({ content: textoParaCorregir }, null);
+          if (correccion) {
+            await message.reply(`🤖 **Corrección automática:**\n\n${correccion}\n\n*⚠️ Orientativa. La nota final la define el profesor.*\n\n📤 +20 puntos | Total: **${p.pts} pts** ${rol.emoji}`);
+          }
+        } catch (e) { console.error('Error corrección:', e); }
+        return;
+      }
+    }
+
+    // Iniciar formulario si escribe algo en #entregas
+    if (!formularioActivo.has(userId) && message.content.length > 2) {
+      formularioActivo.set(userId, { paso: 1, nombre, actividad: '', link: '', comentario: '' });
+      await message.reply(`📝 **Formulario de entrega — IEV 2026**\n\nHola **${nombre}**, vamos a registrar tu entrega paso a paso.\n\n**Paso 1/3:** ¿Cuál es el nombre de la actividad que entregás?`);
     }
   }
 
@@ -293,9 +365,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
     asistentesHoy.set(userId, { nombre, hora });
     await guardarAsistencia(nombre, fechaClaseActual, hora);
-    darPuntos(userId, nombre, 'asistencia');
-    const p = puntos.get(userId);
+    const p = darPuntos(userId, nombre, 'asistencia');
     const rol = getRol(p.pts);
+    await actualizarRolDiscord(interaction.member, p.pts);
     await interaction.reply({ content: `✅ **${nombre}** registró presencia a las **${hora}**\n${rol.emoji} +10 puntos | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` });
     return;
   }
