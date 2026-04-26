@@ -388,11 +388,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const id = parseInt(interaction.customId.split('_')[1]);
     const tarea = tareas.get(id);
     if (!tarea) { await interaction.reply({ content: '❌ Tarea no encontrada.', ephemeral: true }); return; }
-    const lista = tarea.completados.size > 0 ? [...tarea.completados].map((n, i) => `${i+1}. ${n}`).join('
-') : 'Ningún alumno completó esta tarea todavía.';
-    await interaction.reply({ content: `👥 **Completaron "${tarea.titulo}"** (${tarea.completados.size}):
-
-${lista}`, ephemeral: true });
+    const completadosList = [...tarea.completados];
+    const listaTexto = completadosList.length > 0
+      ? completadosList.map((n, i) => (i+1) + '. ' + n).join('\n')
+      : 'Ningún alumno completó esta tarea todavía.';
+    const replyTexto = '👥 **Completaron "' + tarea.titulo + '"** (' + tarea.completados.size + '):\n\n' + listaTexto;
+    await interaction.reply({ content: replyTexto, ephemeral: true });
     return;
   }
 
@@ -533,15 +534,12 @@ Hacé clic en el botón cuando la completes.`,
       }
       case 'tareas': {
         if (tareas.size === 0) { await interaction.editReply('No hay tareas activas.'); break; }
-        const lista = [...tareas.entries()].map(([id, t]) =>
-          `**#${id} — ${t.titulo}**
-⏰ Vence: ${t.fecha} | ✅ Completaron: ${t.completados.size}`
-        ).join('
-
-');
-        await interaction.editReply(`📚 **Tareas activas:**
-
-${lista}`);
+        if (tareas.size === 0) { await interaction.editReply('No hay tareas activas.'); break; }
+        const listaItems = [...tareas.entries()].map(([id, t]) =>
+          '**#' + id + ' — ' + t.titulo + '**' + '\n' + '⏰ Vence: ' + t.fecha + ' | ✅ Completaron: ' + t.completados.size
+        );
+        const lista = listaItems.join('\n\n');
+        await interaction.editReply('📚 **Tareas activas:**\n\n' + lista);
         break;
       }
       case 'completar': {
