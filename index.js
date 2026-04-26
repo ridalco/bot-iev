@@ -14,7 +14,34 @@ const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
 const CANAL_ASISTENCIA = 'dudas';
 const CANAL_ENTREGAS = 'entregas';
-const CANAL_NOTICIAS = 'noticias-tech'; // crear este canal en Discord
+const CANAL_NOTICIAS = 'noticias-tech';
+const CANAL_RANKING = 'ranking';
+
+// Sistema de puntos en memoria
+const puntos = new Map(); // userId -> { nombre, pts, entregas, asistencias, preguntas }
+
+function darPuntos(userId, nombre, tipo) {
+  if (!puntos.has(userId)) puntos.set(userId, { nombre, pts: 0, entregas: 0, asistencias: 0, preguntas: 0 });
+  const p = puntos.get(userId);
+  p.nombre = nombre;
+  if (tipo === 'asistencia') { p.pts += 10; p.asistencias++; }
+  if (tipo === 'entrega') { p.pts += 20; p.entregas++; }
+  if (tipo === 'pregunta') { p.pts += 5; p.preguntas++; }
+  puntos.set(userId, p);
+}
+
+function getRanking() {
+  return [...puntos.entries()]
+    .sort((a, b) => b[1].pts - a[1].pts)
+    .slice(0, 10);
+}
+
+function getRol(pts) {
+  if (pts >= 200) return { nombre: 'Experto Digital', emoji: '🏆' };
+  if (pts >= 100) return { nombre: 'Colaborador Activo', emoji: '⭐' };
+  if (pts >= 50) return { nombre: 'Aprendiz', emoji: '📚' };
+  return { nombre: 'Novato', emoji: '🌱' };
+}
 
 // Horarios de clase
 const HORARIOS_CLASE = [
@@ -166,6 +193,8 @@ const commands = [
   new SlashCommandBuilder().setName('entrega').setDescription('Instrucciones para entregar trabajos'),
   new SlashCommandBuilder().setName('herramientas').setDescription('Links de las herramientas del curso'),
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
+  new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
+  new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
 ];
 
 async function registrarComandos(guildId) {
@@ -231,7 +260,10 @@ client.on(Events.MessageCreate, async (message) => {
         message.channel.sendTyping();
         const correccion = await corregirEntrega(message, adjunto);
         if (correccion) {
-          await message.reply(`🤖 **Corrección automática del Bot IEV:**\n\n${correccion}\n\n*⚠️ Esta es una corrección orientativa. La nota final la define el profesor.*`);
+          darPuntos(message.author.id, message.member?.displayName || message.author.username, 'entrega');
+          const p = puntos.get(message.author.id);
+          const rol = getRol(p.pts);
+          await message.reply(`🤖 **Corrección automática del Bot IEV:**\n\n${correccion}\n\n*⚠️ Corrección orientativa. La nota final la define el profesor.*\n\n📤 +20 puntos por entregar | Total: **${p.pts} pts** ${rol.emoji}`);
         }
       } catch (e) {
         console.error('Error corrección:', e);
@@ -261,7 +293,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
     asistentesHoy.set(userId, { nombre, hora });
     await guardarAsistencia(nombre, fechaClaseActual, hora);
-    await interaction.reply({ content: `✅ **${nombre}** registró presencia a las **${hora}**` });
+    darPuntos(userId, nombre, 'asistencia');
+    const p = puntos.get(userId);
+    const rol = getRol(p.pts);
+    await interaction.reply({ content: `✅ **${nombre}** registró presencia a las **${hora}**\n${rol.emoji} +10 puntos | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` });
     return;
   }
 
@@ -315,7 +350,30 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'preguntar': {
         const pregunta = interaction.options.getString('pregunta');
         const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${CONTEXTO}\n\nPregunta: ${pregunta}` }] });
-        await interaction.editReply(`🤖 **Respuesta:**\n\n${resp.content[0].text}`);
+        darPuntos(interaction.user.id, interaction.member?.displayName || interaction.user.username, 'pregunta');
+        await interaction.editReply(`🤖 **Respuesta:**\n\n${resp.content[0].text}\n\n💡 +5 puntos por participar`);
+        break;
+      }
+      case 'ranking': {
+        const top = getRanking();
+        if (top.length === 0) { await interaction.editReply('No hay puntos registrados todavía.'); break; }
+        const medallas = ['🥇','🥈','🥉','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+        const lista = top.map(([, p], i) => {
+          const rol = getRol(p.pts);
+          return `${medallas[i]} **${p.nombre}** — ${p.pts} pts ${rol.emoji}`;
+        }).join('\n');
+        await interaction.editReply(`🏆 **Ranking IEV 2026**\n\n${lista}\n\n💡 Puntos: asistencia +10 | entrega +20 | pregunta +5`);
+        break;
+      }
+      case 'mispuntos': {
+        const userId = interaction.user.id;
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        if (!puntos.has(userId)) { await interaction.editReply('Todavía no tenés puntos. ¡Participá en clase!'); break; }
+        const p = puntos.get(userId);
+        const rol = getRol(p.pts);
+        const top = getRanking();
+        const pos = top.findIndex(([id]) => id === userId) + 1;
+        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}\n\n📊 **Total: ${p.pts} pts** | Posición #${pos}\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias * 10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas * 20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas * 5} pts)`);
         break;
       }
       case 'entrega':
