@@ -23,6 +23,10 @@ const puntos = new Map(); // userId -> { nombre, pts, entregas, asistencias, pre
 // Formulario de entregas guiado
 const formularioActivo = new Map(); // userId -> { paso, nombre, actividad, link }
 
+// Sistema de tareas
+const tareas = new Map(); // tareaId -> { titulo, descripcion, fechaLimite, canal, completados: Set }
+let tareaCounter = 1;
+
 // Roles Discord por nivel de puntos
 const ROLES_PUNTOS = [
   { nombre: 'Experto Digital', minPts: 200, emoji: '🏆' },
@@ -231,6 +235,13 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
+  new SlashCommandBuilder().setName('tarea')
+    .setDescription('Publicar una nueva tarea (solo profesor)')
+    .addStringOption(o => o.setName('titulo').setDescription('Título de la tarea').setRequired(true))
+    .addStringOption(o => o.setName('descripcion').setDescription('Descripción detallada').setRequired(true))
+    .addStringOption(o => o.setName('fecha').setDescription('Fecha límite (ej: 30/05/2026)').setRequired(true)),
+  new SlashCommandBuilder().setName('tareas').setDescription('Ver todas las tareas activas'),
+  new SlashCommandBuilder().setName('completar').setDescription('Marcar una tarea como completada').addIntegerOption(o => o.setName('id').setDescription('ID de la tarea').setRequired(true)),
 ];
 
 async function registrarComandos(guildId) {
@@ -357,6 +368,34 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Interacciones
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Botones de tarea
+  if (interaction.isButton() && interaction.customId.startsWith('completar_')) {
+    const id = parseInt(interaction.customId.split('_')[1]);
+    const tarea = tareas.get(id);
+    if (!tarea) { await interaction.reply({ content: '❌ Tarea no encontrada.', ephemeral: true }); return; }
+    const nombre = interaction.member?.displayName || interaction.user.username;
+    if (tarea.completados.has(nombre)) { await interaction.reply({ content: `✅ **${nombre}**, ya marcaste esta tarea como completada.`, ephemeral: true }); return; }
+    tarea.completados.add(nombre);
+    const p = darPuntos(interaction.user.id, nombre, 'entrega');
+    const rol = getRol(p.pts);
+    await actualizarRolDiscord(interaction.member, p.pts);
+    await interaction.reply({ content: `✅ **${nombre}** completó la tarea **"${tarea.titulo}"**
+📤 +20 puntos | Total: **${p.pts} pts** ${rol.emoji}` });
+    return;
+  }
+
+  if (interaction.isButton() && interaction.customId.startsWith('vercompletados_')) {
+    const id = parseInt(interaction.customId.split('_')[1]);
+    const tarea = tareas.get(id);
+    if (!tarea) { await interaction.reply({ content: '❌ Tarea no encontrada.', ephemeral: true }); return; }
+    const lista = tarea.completados.size > 0 ? [...tarea.completados].map((n, i) => `${i+1}. ${n}`).join('
+') : 'Ningún alumno completó esta tarea todavía.';
+    await interaction.reply({ content: `👥 **Completaron "${tarea.titulo}"** (${tarea.completados.size}):
+
+${lista}`, ephemeral: true });
+    return;
+  }
+
   if (interaction.isButton() && interaction.customId === 'presente') {
     if (!sesionActiva) { await interaction.reply({ content: '⚠️ La clase ya cerró.', ephemeral: true }); return; }
     const userId = interaction.user.id;
@@ -451,6 +490,73 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'entrega':
         await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá a **#entregas**\n2. Escribí tu nombre y la actividad\n3. Pegá el texto o adjuntá el archivo\n4. El bot lo corrige automáticamente con IA\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
+      case 'tarea': {
+        const titulo = interaction.options.getString('titulo');
+        const descripcion = interaction.options.getString('descripcion');
+        const fecha = interaction.options.getString('fecha');
+        const id = tareaCounter++;
+        const botonCompletar = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId(`completar_${id}`).setLabel('✅  Marcar como completada').setStyle(ButtonStyle.Success),
+          new ButtonBuilder().setCustomId(`vercompletados_${id}`).setLabel('👥  Ver quién completó').setStyle(ButtonStyle.Secondary)
+        );
+        tareas.set(id, { titulo, descripcion, fecha, canal: interaction.channelId, completados: new Set() });
+        await interaction.editReply('✅ Tarea publicada.');
+        await interaction.channel.send({
+          content: `📚 **NUEVA TAREA #${id}**
+
+📌 **${titulo}**
+
+${descripcion}
+
+⏰ **Fecha límite:** ${fecha}
+
+Hacé clic en el botón cuando la completes.`,
+          components: [botonCompletar]
+        });
+
+        // Recordatorio automático 24hs antes
+        const partes = fecha.split('/');
+        if (partes.length === 3) {
+          const fechaDate = new Date(partes[2], partes[1] - 1, partes[0]);
+          const recordatorio = fechaDate.getTime() - Date.now() - 86400000;
+          if (recordatorio > 0) {
+            setTimeout(async () => {
+              const tarea = tareas.get(id);
+              if (tarea) {
+                const canal = interaction.guild.channels.cache.get(tarea.canal);
+                if (canal) await canal.send(`⚠️ **Recordatorio:** La tarea **"${tarea.titulo}"** vence mañana **${tarea.fecha}**. ¡${tarea.completados.size} alumnos ya la completaron!`);
+              }
+            }, recordatorio);
+          }
+        }
+        break;
+      }
+      case 'tareas': {
+        if (tareas.size === 0) { await interaction.editReply('No hay tareas activas.'); break; }
+        const lista = [...tareas.entries()].map(([id, t]) =>
+          `**#${id} — ${t.titulo}**
+⏰ Vence: ${t.fecha} | ✅ Completaron: ${t.completados.size}`
+        ).join('
+
+');
+        await interaction.editReply(`📚 **Tareas activas:**
+
+${lista}`);
+        break;
+      }
+      case 'completar': {
+        const id = interaction.options.getInteger('id');
+        const tarea = tareas.get(id);
+        if (!tarea) { await interaction.editReply(`❌ No existe la tarea #${id}.`); break; }
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        tarea.completados.add(nombre);
+        const p = darPuntos(interaction.user.id, nombre, 'entrega');
+        const rol = getRol(p.pts);
+        await actualizarRolDiscord(interaction.member, p.pts);
+        await interaction.editReply(`✅ **${nombre}** marcó la tarea **"${tarea.titulo}"** como completada.
+📤 +20 puntos | Total: **${p.pts} pts** ${rol.emoji}`);
+        break;
+      }
       case 'herramientas':
         await interaction.editReply('🛠️ **Herramientas del curso:**\n\n📘 Chamilo → aulasvirtuales.name/chamilo\n📗 Moodle → aulasvirtuales.name/innova\n🐙 GitHub → github.com\n💬 Discord → Este servidor ✅');
         break;
