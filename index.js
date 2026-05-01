@@ -27,6 +27,9 @@ const formularioActivo = new Map(); // userId -> { paso, nombre, actividad, link
 const tareas = new Map(); // tareaId -> { titulo, descripcion, fechaLimite, canal, completados: Set }
 let tareaCounter = 1;
 
+// Sistema de quiz interactivo
+const quizActivo = new Map(); // userId -> { pregunta, opciones, correcta, materia, unidad, puntos }
+
 // Sistema de desafio semanal
 const desafios = new Map(); // desafioId -> { titulo, enunciado, materia, soluciones: Map(userId -> {nombre, codigo, hora}) }
 let desafioCounter = 1;
@@ -240,6 +243,9 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
+  new SlashCommandBuilder().setName('quiz')
+    .setDescription('Iniciá un quiz de opción múltiple sobre una unidad (+15 pts si aprobás)')
+    .addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
   new SlashCommandBuilder().setName('desafio')
     .setDescription('Publicar desafio semanal con IA (solo profesor)')
     .addStringOption(o => o.setName('materia').setDescription('iev, bd o informatica').setRequired(true)),
@@ -424,6 +430,50 @@ client.on(Events.MessageCreate, async (message) => {
 
 // Interacciones
 client.on(Events.InteractionCreate, async (interaction) => {
+  // Botones de quiz
+  if (interaction.isButton() && interaction.customId.startsWith('quiz_')) {
+    const parts = interaction.customId.split('_');
+    const respuesta = parts[1];
+    const targetUserId = parts[2];
+    const userId = interaction.user.id;
+
+    if (userId !== targetUserId) {
+      await interaction.reply({ content: '⚠️ Este quiz es de otro alumno. Usá /quiz para el tuyo.', ephemeral: true });
+      return;
+    }
+
+    const quiz = quizActivo.get(userId);
+    if (!quiz) {
+      await interaction.reply({ content: '⚠️ No tenés un quiz activo. Usá /quiz para empezar.', ephemeral: true });
+      return;
+    }
+
+    if (quiz.respondido) {
+      await interaction.reply({ content: '✅ Ya respondiste este quiz. Usá /quiz para una nueva pregunta.', ephemeral: true });
+      return;
+    }
+
+    quiz.respondido = true;
+    quizActivo.set(userId, quiz);
+
+    const nombre = interaction.member?.displayName || interaction.user.username;
+    const esCorrecta = respuesta === quiz.correcta;
+
+    let msg = '';
+    if (esCorrecta) {
+      const p = darPuntos(userId, nombre, 'pregunta');
+      const p2 = darPuntos(userId, nombre, 'pregunta');
+      const p3 = darPuntos(userId, nombre, 'pregunta');
+      await actualizarRolDiscord(interaction.member, p3.pts);
+      msg = '✅ Correcto ' + nombre + '! ' + quiz.explicacion + ' +15 puntos | Total: ' + p3.pts + ' pts. Usa /quiz ' + quiz.unidad + ' para otra pregunta';
+    } else {
+      msg = '❌ Incorrecto ' + nombre + '. Tu respuesta: ' + respuesta + ' - Correcta: ' + quiz.correcta + '. ' + quiz.explicacion + ' Sin descuento de puntos. Usa /quiz ' + quiz.unidad + ' para intentar de nuevo';
+    }
+
+    await interaction.update({ content: msg, components: [] });
+    return;
+  }
+
   // Botones de tarea
   if (interaction.isButton() && interaction.customId.startsWith('completar_')) {
     const id = parseInt(interaction.customId.split('_')[1]);
@@ -554,6 +604,57 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'entrega':
         await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá a **#entregas**\n2. Escribí tu nombre y la actividad\n3. Pegá el texto o adjuntá el archivo\n4. El bot lo corrige automáticamente con IA\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
+      case 'quiz': {
+        const unidadNum = interaction.options.getInteger('unidad');
+        const userId = interaction.user.id;
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        const ctx = getContexto(interaction.guildId, interaction.channel?.name);
+
+        await interaction.editReply('🧠 Generando pregunta...');
+
+        const quizResp = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 500,
+          messages: [{
+            role: 'user',
+            content: ctx + ' Generá UNA pregunta de opción múltiple sobre la Unidad ' + unidadNum + '. Respondé SOLO en este formato JSON exacto sin nada más: {"pregunta":"texto de la pregunta","opciones":["A) opción1","B) opción2","C) opción3","D) opción4"],"correcta":"A","explicacion":"explicación breve de por qué es correcta"}'
+          }]
+        });
+
+        let quizData;
+        try {
+          const txt = quizResp.content[0].text.replace(/```json|```/g, '').trim();
+          quizData = JSON.parse(txt);
+        } catch(e) {
+          await interaction.editReply('❌ Error generando la pregunta. Intentá de nuevo.');
+          break;
+        }
+
+        quizActivo.set(userId, {
+          pregunta: quizData.pregunta,
+          opciones: quizData.opciones,
+          correcta: quizData.correcta,
+          explicacion: quizData.explicacion,
+          unidad: unidadNum,
+          respondido: false
+        });
+
+        const botonesQuiz = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('quiz_A_' + userId).setLabel('A').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('quiz_B_' + userId).setLabel('B').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('quiz_C_' + userId).setLabel('C').setStyle(ButtonStyle.Secondary),
+          new ButtonBuilder().setCustomId('quiz_D_' + userId).setLabel('D').setStyle(ButtonStyle.Secondary),
+        );
+
+        const opcText = quizData.opciones.join('\n');
+        const quizMsg = '🧠 QUIZ Unidad ' + unidadNum + '\n\n' + quizData.pregunta + '\n\n' + opcText + '\n\nSelecciona tu respuesta:';
+        await interaction.editReply({
+          content: quizMsg,
+          components: [botonesQuiz]
+        });
+        break;
+      }
+
       case 'desafio': {
         const materia = interaction.options.getString('materia').toLowerCase();
         const ctx = CONTEXTOS[materia] || CONTEXTOS.iev;
