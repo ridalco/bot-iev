@@ -27,6 +27,11 @@ const formularioActivo = new Map(); // userId -> { paso, nombre, actividad, link
 const tareas = new Map(); // tareaId -> { titulo, descripcion, fechaLimite, canal, completados: Set }
 let tareaCounter = 1;
 
+// Sistema de desafio semanal
+const desafios = new Map(); // desafioId -> { titulo, enunciado, materia, soluciones: Map(userId -> {nombre, codigo, hora}) }
+let desafioCounter = 1;
+let desafioActivo = null; // id del desafio activo
+
 // Roles Discord por nivel de puntos
 const ROLES_PUNTOS = [
   { nombre: 'Experto Digital', minPts: 200, emoji: '🏆' },
@@ -235,6 +240,16 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
+  new SlashCommandBuilder().setName('desafio')
+    .setDescription('Publicar desafio semanal con IA (solo profesor)')
+    .addStringOption(o => o.setName('materia').setDescription('iev, bd o informatica').setRequired(true)),
+  new SlashCommandBuilder().setName('solucionar')
+    .setDescription('Enviar tu solución al desafio activo')
+    .addStringOption(o => o.setName('codigo').setDescription('Tu solución o respuesta').setRequired(true)),
+  new SlashCommandBuilder().setName('soluciones')
+    .setDescription('Ver las soluciones del desafio actual (solo profesor)'),
+  new SlashCommandBuilder().setName('cerrar-desafio')
+    .setDescription('Cerrar el desafio y anunciar al ganador (solo profesor)'),
   new SlashCommandBuilder().setName('tarea')
     .setDescription('Publicar una nueva tarea (solo profesor)')
     .addStringOption(o => o.setName('titulo').setDescription('Título de la tarea').setRequired(true))
@@ -539,6 +554,108 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'entrega':
         await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá a **#entregas**\n2. Escribí tu nombre y la actividad\n3. Pegá el texto o adjuntá el archivo\n4. El bot lo corrige automáticamente con IA\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
+      case 'desafio': {
+        const materia = interaction.options.getString('materia').toLowerCase();
+        const ctx = CONTEXTOS[materia] || CONTEXTOS.iev;
+        await interaction.editReply('⏳ Generando desafio con IA...');
+
+        const respDesafio = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 600,
+          messages: [{ role: 'user', content: ctx + '\n\nGenerá un desafio semanal desafiante pero alcanzable. Formato: DESAFIO: [título] ENUNCIADO: [problema 3-5 líneas] PISTA: [sin revelar solución] DIFICULTAD: [Básico/Intermedio/Avanzado]' }]
+        });
+        const textoDesafio = respDesafio.content[0].text;
+        const id = desafioCounter++;
+        desafioActivo = id;
+        desafios.set(id, { titulo: 'Desafio #' + id, enunciado: textoDesafio, materia, soluciones: new Map() });
+
+        await interaction.editReply('✅ Desafio publicado.');
+        const msgDesafio = '🏆 **DESAFIO SEMANAL #' + id + '**\n\n' + textoDesafio + '\n\n+25 pts por participar. Usá /solucionar para enviar tu respuesta.';
+        await interaction.channel.send({ content: msgDesafio });
+        break;
+      }
+
+      case 'solucionar': {
+        if (!desafioActivo || !desafios.has(desafioActivo)) {
+          await interaction.editReply('❌ No hay ningún desafio activo. Esperá que el profesor publique uno con /desafio.');
+          break;
+        }
+        const desafio = desafios.get(desafioActivo);
+        const userId = interaction.user.id;
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        const codigo = interaction.options.getString('codigo');
+
+        if (desafio.soluciones.has(userId)) {
+          await interaction.editReply('✅ Ya enviaste una solución a este desafio. Solo se acepta una por persona.');
+          break;
+        }
+
+        const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+        desafio.soluciones.set(userId, { nombre, codigo, hora });
+
+        // Dar puntos por participar
+        const p = darPuntos(userId, nombre, 'entrega');
+        const p2 = darPuntos(userId, nombre, 'pregunta');
+        await actualizarRolDiscord(interaction.member, p2.pts);
+
+        // Evaluar la solución con IA
+        const ctx = CONTEXTOS[desafio.materia] || CONTEXTOS.iev;
+        const evalResp = await anthropic.messages.create({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 400,
+          messages: [{ role: 'user', content: ctx + ' Desafio: ' + desafio.enunciado + ' Solucion de ' + nombre + ': ' + codigo + ' Evalua brevemente: es correcta, que esta bien, que mejorarias. Se pedagogico y alentador.' }]
+        });
+
+        const feedbackMsg = '✅ **' + nombre + '**, tu solucion fue registrada.\n\n🤖 **Feedback:**\n' + evalResp.content[0].text + '\n\n📤 +25 puntos | Total: **' + p2.pts + ' pts**';
+        await interaction.editReply(feedbackMsg);
+      }
+
+      case 'soluciones': {
+        if (!desafioActivo || !desafios.has(desafioActivo)) {
+          await interaction.editReply('No hay desafio activo.');
+          break;
+        }
+        const desafio = desafios.get(desafioActivo);
+        if (desafio.soluciones.size === 0) {
+          await interaction.editReply('Ningún alumno envió solución todavía.');
+          break;
+        }
+        const listaItems2 = [...desafio.soluciones.values()].map((s, i) =>
+          (i + 1) + '. ' + s.nombre + ' (' + s.hora + '): ' + s.codigo.substring(0, 80)
+        );
+        const lista = listaItems2.join('\n');
+        await interaction.editReply('📋 Soluciones (' + desafio.soluciones.size + '):\n\n' + lista);
+      }
+
+      case 'cerrar-desafio': {
+        if (!desafioActivo || !desafios.has(desafioActivo)) {
+          await interaction.editReply('No hay desafio activo.');
+          break;
+        }
+        const desafio = desafios.get(desafioActivo);
+        const total = desafio.soluciones.size;
+
+        if (total === 0) {
+          desafioActivo = null;
+          await interaction.editReply('Desafio cerrado sin participantes.');
+          break;
+        }
+
+        // Elegir ganador (primero en enviar)
+        const [ganadorId, ganadorData] = [...desafio.soluciones.entries()][0];
+        const ganadorMember = await interaction.guild.members.fetch(ganadorId).catch(() => null);
+
+        // Dar puntos extra al ganador
+        const pGanador = darPuntos(ganadorId, ganadorData.nombre, 'entrega');
+        const pGanador2 = darPuntos(ganadorId, ganadorData.nombre, 'entrega');
+        if (ganadorMember) await actualizarRolDiscord(ganadorMember, pGanador2.pts);
+
+        desafioActivo = null;
+        await interaction.editReply('✅ Desafio cerrado.');
+        const msgCierre = '🏆 DESAFIO CERRADO - Participantes: ' + total + ' - Ganador: ' + ganadorData.nombre + ' (enviado a las ' + ganadorData.hora + ') - Felicitaciones a todos! Usá /ranking para ver los cambios.';
+        await interaction.channel.send({ content: msgCierre });
+      }
+
       case 'tarea': {
         const titulo = interaction.options.getString('titulo');
         const descripcion = interaction.options.getString('descripcion');
