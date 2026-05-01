@@ -228,7 +228,7 @@ const commands = [
   new SlashCommandBuilder().setName('asistencia').setDescription('Ver asistencia del día'),
   new SlashCommandBuilder().setName('noticias').setDescription('Publicar noticias tech del día ahora'),
   new SlashCommandBuilder().setName('corregir').setDescription('Corregir un trabajo con IA').addStringOption(o => o.setName('texto').setDescription('Pegá el texto del trabajo aquí').setRequired(true)),
-  new SlashCommandBuilder().setName('unidad').setDescription('Info de una unidad').addIntegerOption(o => o.setName('numero').setDescription('Número 1-5').setRequired(true).setMinValue(1).setMaxValue(5)),
+  new SlashCommandBuilder().setName('unidad').setDescription('Info de una unidad de la materia').addIntegerOption(o => o.setName('numero').setDescription('Número de unidad (1-7 según materia)').setRequired(true).setMinValue(1).setMaxValue(7)),
   new SlashCommandBuilder().setName('preguntar').setDescription('Preguntá a la IA sobre la materia').addStringOption(o => o.setName('pregunta').setDescription('Tu pregunta').setRequired(true)),
   new SlashCommandBuilder().setName('entrega').setDescription('Instrucciones para entregar trabajos'),
   new SlashCommandBuilder().setName('herramientas').setDescription('Links de las herramientas del curso'),
@@ -250,15 +250,55 @@ async function registrarComandos(guildId) {
   console.log('✅ Comandos registrados');
 }
 
-const CONTEXTO = `Sos el asistente de "Internet y Entornos Virtuales" del Profesorado en Informática del IES N°6, Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico. Unidades: 1-Introducción a Internet, 2-Correo y netiqueta, 3-Criterio CRAAP, 4-Comunicación sincrónica/asincrónica, 5-Entornos virtuales Chamilo/Moodle.`;
+// Contextos por materia según servidor/canal
+const CONTEXTOS = {
+  iev: `Sos el asistente de "Internet y Entornos Virtuales" del Profesorado en Informática del IES N°6, Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico. Unidades: 1-Introducción a Internet (TCP/IP, HTTP, comandos CMD), 2-Correo y netiqueta (SMTP, POP3, IMAP), 3-Criterio CRAAP para evaluar fuentes, 4-Comunicación sincrónica/asincrónica (Discord, Meet, foros), 5-Entornos virtuales Chamilo/Moodle. Plataformas: Chamilo y Moodle.`,
+
+  bd: `Sos el asistente de "Base de Datos" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico. El programa tiene 7 unidades: 1-Introducción y arquitectura de SGBD (definiciones, niveles de abstracción, modelos de datos, DDL/DML), 2-Modelo de datos (conceptual vs lógico, restricciones de integridad), 3-Diseño de bases de datos y Diagrama Entidad-Relación (entidades, atributos, relaciones, cardinalidad, herencia, especialización/generalización), 4-Modelo Relacional (restricciones de integridad, claves, vistas, consultas relacionales), 5-Dependencias funcionales y Normalización (1FN, 2FN, 3FN, BCNF, 4FN, 5FN), 6-Álgebra y Cálculo Relacional (operadores primitivos y derivados, cálculo de tuplas y dominios), 7-SQL (DDL: CREATE/ALTER/DROP, DML: SELECT/INSERT/UPDATE/DELETE, restricciones, vistas). Si no sabés algo decí que consulte al profesor.`,
+
+  informatica: `Sos el asistente de "Informática" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, 1er año, Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico. El programa tiene 5 unidades: 1-Introducción a la Informática (concepto, hardware, software, sistemas operativos, evolución histórica, disciplinas relacionadas), 2-Ofimática y Aplicaciones de Productividad (procesadores de texto, hojas de cálculo, presentaciones, uso profesional), 3-Computación Distribuida y Redes (tipos de redes, protocolos, cliente/servidor, peer-to-peer, computación móvil), 4-Computación Paralela y Concurrente (procesadores multinúcleo, paralelismo, concurrencia), 5-Inteligencia Artificial y Especializaciones (machine learning, redes neuronales, PLN, tendencias futuras). Recursos: Moodle, Google Classroom, Google Drive. Si no sabés algo decí que consulte al profesor.`,
+};
+
+function getContexto(guildId, channelName) {
+  // Detectar por nombre de canal
+  if (channelName && (channelName.includes('bd') || channelName.includes('base') || channelName.includes('datos'))) return CONTEXTOS.bd;
+  if (channelName && (channelName.includes('info') || channelName.includes('informatica'))) return CONTEXTOS.informatica;
+  return CONTEXTOS.iev; // default IEV
+}
+
+const CONTEXTO = CONTEXTOS.iev; // fallback
 
 const UNIDADES = {
-  1: '🌐 **Unidad 1 — Introducción a Internet**\n\nProtocolos TCP/IP, HTTP, HTTPS, FTP. Comandos CMD: ping, tracert, ipconfig, nslookup.\n\n**Plataforma:** Chamilo → aulasvirtuales.name/chamilo',
-  2: '📧 **Unidad 2 — Correo Electrónico y Netiqueta**\n\nSMTP, POP3, IMAP. Netiqueta digital. CC vs CCO.\n\n**Plataforma:** Moodle → aulasvirtuales.name/innova',
-  3: '🔍 **Unidad 3 — Búsqueda y Evaluación**\n\nMotores de búsqueda. Criterio CRAAP. Fake news.\n\n**Probá:** /craap [url]',
-  4: '💬 **Unidad 4 — Comunicación**\n\nSincrónica vs Asincrónica. Discord, Meet, Zoom. Foros.',
-  5: '🖥️ **Unidad 5 — Entornos Virtuales**\n\nChamilo y Moodle. Roles. Creación de cursos.\n\n**Proyecto final:** Aula virtual en Chamilo.',
+  iev: {
+    1: '🌐 **IEV — Unidad 1: Introducción a Internet**\n\nProtocolos TCP/IP, HTTP, HTTPS, FTP. Comandos CMD: ping, tracert, ipconfig, nslookup.\n\n**Plataforma:** Chamilo → aulasvirtuales.name/chamilo',
+    2: '📧 **IEV — Unidad 2: Correo Electrónico y Netiqueta**\n\nSMTP, POP3, IMAP. Netiqueta digital. CC vs CCO.\n\n**Plataforma:** Moodle → aulasvirtuales.name/innova',
+    3: '🔍 **IEV — Unidad 3: Búsqueda y Evaluación**\n\nMotores de búsqueda. Criterio CRAAP. Fake news.\n\n**Probá:** /craap [url]',
+    4: '💬 **IEV — Unidad 4: Comunicación**\n\nSincrónica vs Asincrónica. Discord, Meet, Zoom. Foros.',
+    5: '🖥️ **IEV — Unidad 5: Entornos Virtuales**\n\nChamilo y Moodle. Roles. Creación de cursos.\n\n**Proyecto final:** Aula virtual en Chamilo.',
+  },
+  bd: {
+    1: '🗄️ **BD — Unidad 1: Introducción y Arquitectura de SGBD**\n\nDefinición de BD y SGBD, niveles de abstracción (físico, conceptual, externo), independencia de datos, DDL y DML.',
+    2: '📊 **BD — Unidad 2: Modelo de Datos**\n\nModelos conceptuales vs lógicos. Restricciones de integridad. Aspectos estáticos y dinámicos.',
+    3: '🔗 **BD — Unidad 3: Diseño y Diagrama E-R**\n\nEntidades, atributos, relaciones, cardinalidad, entidades débiles, herencia, especialización y generalización.',
+    4: '📋 **BD — Unidad 4: Modelo Relacional**\n\nClaves primarias y foráneas, restricciones de integridad, vistas, consultas relacionales, diseño lógico desde E-R.',
+    5: '📐 **BD — Unidad 5: Normalización**\n\nDependencias funcionales. Formas normales: 1FN, 2FN, 3FN, BCNF, 4FN, 5FN. Desnormalización.',
+    6: '🔢 **BD — Unidad 6: Álgebra y Cálculo Relacional**\n\nOperadores primitivos (selección, proyección, unión, diferencia, producto cartesiano) y derivados. Cálculo de tuplas y dominios.',
+    7: '💻 **BD — Unidad 7: SQL**\n\nDDL: CREATE, ALTER, DROP. DML: SELECT, INSERT, UPDATE, DELETE. Restricciones, vistas, subconsultas.',
+  },
+  informatica: {
+    1: '💻 **Informática — Unidad 1: Introducción**\n\nConcepto de informática, hardware, software, sistemas operativos. Evolución histórica. Disciplinas relacionadas.',
+    2: '📝 **Informática — Unidad 2: Ofimática**\n\nProcesadores de texto, hojas de cálculo, presentaciones. Uso profesional de herramientas de productividad.',
+    3: '🌐 **Informática — Unidad 3: Redes y Computación Distribuida**\n\nTipos de redes, protocolos. Cliente/servidor vs peer-to-peer. Computación móvil.',
+    4: '⚡ **Informática — Unidad 4: Computación Paralela y Concurrente**\n\nProcesadores multinúcleo, paralelismo, concurrencia, gestión de tareas simultáneas.',
+    5: '🤖 **Informática — Unidad 5: Inteligencia Artificial**\n\nMachine learning, redes neuronales, PLN. Aplicaciones de IA en redes y sistemas. Tendencias futuras.',
+  }
 };
+
+function getUnidades(channelName) {
+  if (channelName && (channelName.includes('bd') || channelName.includes('base') || channelName.includes('datos'))) return UNIDADES.bd;
+  if (channelName && (channelName.includes('info') || channelName.includes('informatica'))) return UNIDADES.informatica;
+  return UNIDADES.iev;
+}
 
 // =============================================
 // EVENTOS
@@ -360,7 +400,8 @@ client.on(Events.MessageCreate, async (message) => {
     if (!pregunta) return;
     try {
       message.channel.sendTyping();
-      const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTO}\n\nPregunta: ${pregunta}` }] });
+      const ctxMention = getContexto(message.guildId, message.channel?.name);
+    const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${ctxMention}\n\nPregunta: ${pregunta}` }] });
       message.reply(`🤖 ${resp.content[0].text}`);
     } catch (e) { message.reply('❌ No pude procesar tu pregunta.'); }
   }
@@ -456,12 +497,19 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
       case 'unidad': {
         const num = interaction.options.getInteger('numero');
-        await interaction.editReply(UNIDADES[num]);
+        const unidadesMateria = getUnidades(interaction.channel?.name);
+        const unidadTexto = unidadesMateria[num];
+        if (!unidadTexto) {
+          await interaction.editReply(`❌ Esta materia no tiene unidad ${num}. Usá un número válido.`);
+        } else {
+          await interaction.editReply(unidadTexto);
+        }
         break;
       }
       case 'preguntar': {
         const pregunta = interaction.options.getString('pregunta');
-        const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${CONTEXTO}\n\nPregunta: ${pregunta}` }] });
+        const ctxPreg = getContexto(interaction.guildId, interaction.channel?.name);
+        const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${ctxPreg}\n\nPregunta: ${pregunta}` }] });
         darPuntos(interaction.user.id, interaction.member?.displayName || interaction.user.username, 'pregunta');
         await interaction.editReply(`🤖 **Respuesta:**\n\n${resp.content[0].text}\n\n💡 +5 puntos por participar`);
         break;
@@ -560,7 +608,8 @@ Hacé clic en el botón cuando la completes.`,
         break;
       case 'craap': {
         const url = interaction.options.getString('url');
-        const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${CONTEXTO}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá del 1 al 5 cada dimensión y dá conclusión final.` }] });
+        const ctxCraap = getContexto(interaction.guildId, interaction.channel?.name);
+        const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${ctxCraap}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá del 1 al 5 cada dimensión y dá conclusión final.` }] });
         await interaction.editReply(`🔍 **Evaluación CRAAP: \`${url}\`**\n\n${resp.content[0].text}`);
         break;
       }
