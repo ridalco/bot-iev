@@ -12,6 +12,12 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 const GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 
+// Moodle
+const MOODLE_TOKEN_IES6 = process.env.MOODLE_TOKEN_IES6;
+const MOODLE_TOKEN_IES11 = process.env.MOODLE_TOKEN_IES11;
+const MOODLE_URL_IES6 = 'https://ies6.aulasvirtuales.name';
+const MOODLE_URL_IES11 = 'https://ies11.aulasvirtuales.name';
+
 const CANAL_ASISTENCIA = 'dudas';
 const CANAL_ENTREGAS = 'entregas';
 const CANAL_NOTICIAS = 'noticias-tech';
@@ -247,6 +253,16 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
+  new SlashCommandBuilder().setName('miscursos')
+    .setDescription('Ver tus cursos activos en Moodle'),
+  new SlashCommandBuilder().setName('misnota')
+    .setDescription('Consultar tus notas en Moodle')
+    .addStringOption(o => o.setName('nombre').setDescription('Tu nombre completo en Moodle').setRequired(true)),
+  new SlashCommandBuilder().setName('actividades')
+    .setDescription('Ver las actividades pendientes de un curso')
+    .addIntegerOption(o => o.setName('curso').setDescription('ID del curso (usá /miscursos para verlo)').setRequired(true)),
+  new SlashCommandBuilder().setName('moodle')
+    .setDescription('Ver el estado de la conexión con Moodle'),
   new SlashCommandBuilder().setName('evento')
     .setDescription('Agregar un evento al calendario del cuatrimestre (solo profesor)')
     .addStringOption(o => o.setName('titulo').setDescription('Nombre del evento').setRequired(true))
@@ -349,6 +365,56 @@ function getUnidades(channelName) {
 // EVENTOS
 // =============================================
 // =============================================
+// HELPERS DE MOODLE
+// =============================================
+async function moodleAPI(url, token, func, params = {}) {
+  try {
+    const qs = new URLSearchParams({
+      wstoken: token,
+      wsfunction: func,
+      moodlewsrestformat: 'json',
+      ...params
+    });
+    const resp = await fetch(url + '/webservice/rest/server.php?' + qs.toString());
+    const data = await resp.json();
+    if (data && data.exception) return null;
+    return data;
+  } catch(e) { return null; }
+}
+
+function getMoodleConfig(guildName) {
+  const esIES11 = guildName && guildName.toLowerCase().includes('11');
+  return {
+    url: esIES11 ? MOODLE_URL_IES11 : MOODLE_URL_IES6,
+    token: esIES11 ? MOODLE_TOKEN_IES11 : MOODLE_TOKEN_IES6,
+    nombre: esIES11 ? 'IES N°11' : 'IES N°6'
+  };
+}
+
+async function getCursos(url, token) {
+  return await moodleAPI(url, token, 'core_course_get_courses');
+}
+
+async function getActividades(url, token, courseId) {
+  return await moodleAPI(url, token, 'core_course_get_contents', { courseid: courseId });
+}
+
+async function getUsuarioPorNombre(url, token, nombre) {
+  const data = await moodleAPI(url, token, 'core_user_get_users', {
+    'criteria[0][key]': 'fullname',
+    'criteria[0][value]': nombre
+  });
+  return data && data.users && data.users.length > 0 ? data.users[0] : null;
+}
+
+async function getNotasUsuario(url, token, userId, courseId) {
+  return await moodleAPI(url, token, 'gradereport_user_get_grade_items', {
+    userid: userId,
+    courseid: courseId
+  });
+}
+
+// =============================================
 // HELPERS DE CALENDARIO
 // =============================================
 function parseFecha(str) {
@@ -389,6 +455,37 @@ client.once(Events.ClientReady, async (c) => {
     const dia = ahora.getDay();
     const hora = ahora.getHours();
     const min = ahora.getMinutes();
+
+    // Verificar nuevas actividades en Moodle cada hora (minuto 0)
+    if (ahora.getMinutes() === 0) {
+      for (const guild of client.guilds.cache.values()) {
+        const esIES11 = guild.name.toLowerCase().includes('11');
+        const mc = getMoodleConfig(guild.name);
+        if (!mc.token) continue;
+        const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
+        if (!canal) continue;
+        const cursos = await getCursos(mc.url, mc.token);
+        if (!cursos || !Array.isArray(cursos)) continue;
+        const activos = cursos.filter(c => c.visible === 1 && c.id > 1).slice(0, 3);
+        for (const curso of activos) {
+          const secciones = await getActividades(mc.url, mc.token, curso.id);
+          if (!secciones || !Array.isArray(secciones)) continue;
+          const haceUnaHora = Date.now() - 3600000;
+          for (const sec of secciones) {
+            for (const mod of (sec.modules || [])) {
+              if (mod.modname === 'assign' && mod.dates) {
+                for (const date of mod.dates) {
+                  if (date.timestamp * 1000 > haceUnaHora && date.dataid === 'duedate') {
+                    const msgMoodle = 'Recordatorio Moodle ' + mc.nombre + ' - ' + mod.name + ' - Curso: ' + curso.shortname + ' - Fecha: ' + new Date(date.timestamp * 1000).toLocaleDateString('es-AR');
+                    canal.send(msgMoodle);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
 
     // Verificar avisos de calendario
     const hoy2 = new Date();
@@ -693,6 +790,78 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'entrega':
         await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá a **#entregas**\n2. Escribí tu nombre y la actividad\n3. Pegá el texto o adjuntá el archivo\n4. El bot lo corrige automáticamente con IA\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
+      case 'moodle': {
+        const mc = getMoodleConfig(interaction.guild?.name);
+        const cursos = await getCursos(mc.url, mc.token);
+        if (!cursos) {
+          await interaction.editReply('❌ No se pudo conectar con Moodle de ' + mc.nombre + '. Verificá el token en Railway.');
+          break;
+        }
+        const total = Array.isArray(cursos) ? cursos.length : 0;
+        const moodleStatus = 'Moodle ' + mc.nombre + ' conectado. Cursos: ' + total + ' - ' + mc.url;
+        await interaction.editReply(moodleStatus);
+        break;
+      }
+
+      case 'miscursos': {
+        const mc = getMoodleConfig(interaction.guild?.name);
+        const cursos = await getCursos(mc.url, mc.token);
+        if (!cursos || !Array.isArray(cursos)) {
+          await interaction.editReply('❌ No se pudo obtener los cursos de Moodle. Usá /moodle para verificar la conexión.');
+          break;
+        }
+        const activos = cursos.filter(c => c.visible === 1 && c.id > 1);
+        if (activos.length === 0) { await interaction.editReply('No hay cursos activos en Moodle.'); break; }
+        const lista = activos.slice(0, 15).map(c => '#' + c.id + ' - ' + c.fullname).join('\n');
+        await interaction.editReply('Cursos Moodle ' + mc.nombre + ':\n\n' + lista + '\n\nUsa /actividades curso:[id] para ver actividades.');
+        break;
+      }
+
+      case 'actividades': {
+        const mc = getMoodleConfig(interaction.guild?.name);
+        const courseId = interaction.options.getInteger('curso');
+        const secciones = await getActividades(mc.url, mc.token, courseId);
+        if (!secciones || !Array.isArray(secciones)) {
+          await interaction.editReply('❌ No se pudo obtener las actividades. Verificá el ID del curso con /miscursos.');
+          break;
+        }
+        let msg = 'Actividades del curso #' + courseId + ':\n';
+        let totalActs = 0;
+        for (const seccion of secciones.slice(0, 5)) {
+          if (!seccion.modules || seccion.modules.length === 0) continue;
+          msg += seccion.name + ':\n';
+          for (const mod of seccion.modules.slice(0, 5)) {
+            msg += '  - ' + mod.name + ' (' + mod.modname + ')\n';
+            totalActs++;
+          }
+        }
+        if (totalActs === 0) { await interaction.editReply('No hay actividades en este curso.'); break; }
+        await interaction.editReply(msg);
+        break;
+      }
+
+      case 'misnota': {
+        const mc = getMoodleConfig(interaction.guild?.name);
+        const nombreBuscar = interaction.options.getString('nombre');
+        const usuario = await getUsuarioPorNombre(mc.url, mc.token, nombreBuscar);
+        if (!usuario) { await interaction.editReply('No encontre el usuario ' + nombreBuscar + ' en Moodle ' + mc.nombre + '. Verificá el nombre.'); break; }
+        const cursos = await getCursos(mc.url, mc.token);
+        if (!cursos || !Array.isArray(cursos)) { await interaction.editReply('No se pudo obtener los cursos.'); break; }
+        const activos = cursos.filter(c => c.visible === 1 && c.id > 1).slice(0, 3);
+        let notasMsg = 'Notas de ' + usuario.fullname + ' en ' + mc.nombre + ':\n\n';
+        for (const curso of activos) {
+          const notas = await getNotasUsuario(mc.url, mc.token, usuario.id, curso.id);
+          if (!notas || !notas.usergrades || notas.usergrades.length === 0) continue;
+          notasMsg += curso.shortname + ':\n';
+          const items = notas.usergrades[0]?.gradeitems || [];
+          for (const item of items.slice(0, 5)) {
+            notasMsg += '  - ' + item.itemname + ': ' + (item.gradeformatted || 'Sin calificar') + '\n';
+          }
+        }
+        await interaction.editReply(notasMsg || 'No se encontraron notas.');
+        break;
+      }
+
       case 'evento': {
         const titulo = interaction.options.getString('titulo');
         const fecha = interaction.options.getString('fecha');
