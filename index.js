@@ -27,6 +27,10 @@ const formularioActivo = new Map(); // userId -> { paso, nombre, actividad, link
 const tareas = new Map(); // tareaId -> { titulo, descripcion, fechaLimite, canal, completados: Set }
 let tareaCounter = 1;
 
+// Sistema de calendario del cuatrimestre
+const eventos = new Map(); // eventoId -> { titulo, fecha, tipo, materia, descripcion, avisado3d, avisado1d }
+let eventoCounter = 1;
+
 // Sistema de quiz interactivo
 const quizActivo = new Map(); // userId -> { pregunta, opciones, correcta, materia, unidad, puntos }
 
@@ -243,6 +247,26 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación del curso'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y rol actual'),
+  new SlashCommandBuilder().setName('evento')
+    .setDescription('Agregar un evento al calendario del cuatrimestre (solo profesor)')
+    .addStringOption(o => o.setName('titulo').setDescription('Nombre del evento').setRequired(true))
+    .addStringOption(o => o.setName('fecha').setDescription('Fecha (dd/mm/yyyy)').setRequired(true))
+    .addStringOption(o => o.setName('tipo').setDescription('Tipo de evento').setRequired(true)
+      .addChoices(
+        { name: 'Parcial', value: 'parcial' },
+        { name: 'Entrega', value: 'entrega' },
+        { name: 'Proyecto final', value: 'proyecto' },
+        { name: 'Clase especial', value: 'clase' },
+        { name: 'Recuperatorio', value: 'recuperatorio' },
+      ))
+    .addStringOption(o => o.setName('descripcion').setDescription('Descripción opcional').setRequired(false)),
+  new SlashCommandBuilder().setName('calendario')
+    .setDescription('Ver todos los eventos del cuatrimestre'),
+  new SlashCommandBuilder().setName('proximo')
+    .setDescription('Ver el próximo evento importante'),
+  new SlashCommandBuilder().setName('borrar-evento')
+    .setDescription('Borrar un evento del calendario (solo profesor)')
+    .addIntegerOption(o => o.setName('id').setDescription('ID del evento').setRequired(true)),
   new SlashCommandBuilder().setName('quiz')
     .setDescription('Iniciá un quiz de opción múltiple sobre una unidad (+15 pts si aprobás)')
     .addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
@@ -324,6 +348,38 @@ function getUnidades(channelName) {
 // =============================================
 // EVENTOS
 // =============================================
+// =============================================
+// HELPERS DE CALENDARIO
+// =============================================
+function parseFecha(str) {
+  const p = str.split('/');
+  if (p.length !== 3) return null;
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function diasRestantes(fecha) {
+  const hoy = new Date();
+  hoy.setHours(0,0,0,0);
+  fecha.setHours(0,0,0,0);
+  return Math.round((fecha - hoy) / 86400000);
+}
+
+function emojiTipo(tipo) {
+  const map = { parcial:'📝', entrega:'📤', proyecto:'🎓', clase:'📚', recuperatorio:'🔄' };
+  return map[tipo] || '📅';
+}
+
+function formatEventos(lista) {
+  if (lista.length === 0) return 'No hay eventos registrados.';
+  return lista.map(([id, ev]) => {
+    const dias = diasRestantes(parseFecha(ev.fecha));
+    const estado = dias < 0 ? '✅ Pasado' : dias === 0 ? '🔴 HOY' : dias === 1 ? '🟠 Mañana' : dias <= 3 ? '🟡 En ' + dias + ' días' : '🟢 En ' + dias + ' días';
+    return emojiTipo(ev.tipo) + ' **#' + id + ' — ' + ev.titulo + '**' +
+      '\n📅 ' + ev.fecha + ' · ' + estado +
+      (ev.descripcion ? '\n📋 ' + ev.descripcion : '');
+  }).join('\n\n');
+}
+
 client.once(Events.ClientReady, async (c) => {
   console.log(`✅ Bot conectado como ${c.user.tag}`);
   for (const guild of c.guilds.cache.values()) await registrarComandos(guild.id);
@@ -333,6 +389,39 @@ client.once(Events.ClientReady, async (c) => {
     const dia = ahora.getDay();
     const hora = ahora.getHours();
     const min = ahora.getMinutes();
+
+    // Verificar avisos de calendario
+    const hoy2 = new Date();
+    hoy2.setHours(0,0,0,0);
+    for (const [id, ev] of eventos.entries()) {
+      const fechaEv = parseFecha(ev.fecha);
+      if (!fechaEv) continue;
+      const dias = diasRestantes(fechaEv);
+
+      if (dias === 3 && !ev.avisado3d) {
+        ev.avisado3d = true;
+        for (const guild of client.guilds.cache.values()) {
+          const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
+          if (canal) canal.send('⏰ **Recordatorio — Faltan 3 días**\n\n' + emojiTipo(ev.tipo) + ' **' + ev.titulo + '**\n📅 Fecha: **' + ev.fecha + '**' + (ev.descripcion ? '\n📋 ' + ev.descripcion : ''));
+        }
+      }
+
+      if (dias === 1 && !ev.avisado1d) {
+        ev.avisado1d = true;
+        for (const guild of client.guilds.cache.values()) {
+          const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
+          if (canal) canal.send('🚨 **Aviso — Mañana es el día**\n\n' + emojiTipo(ev.tipo) + ' **' + ev.titulo + '** es MAÑANA\n📅 Fecha: **' + ev.fecha + '**' + (ev.descripcion ? '\n📋 ' + ev.descripcion : ''));
+        }
+      }
+
+      if (dias === 0 && !ev.avisadoHoy) {
+        ev.avisadoHoy = true;
+        for (const guild of client.guilds.cache.values()) {
+          const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
+          if (canal) canal.send('🔴 **HOY — ' + ev.titulo + '**\n\n' + emojiTipo(ev.tipo) + ' Recordá que hoy es el día de este evento.\n📅 Fecha: **' + ev.fecha + '**' + (ev.descripcion ? '\n📋 ' + ev.descripcion : ''));
+        }
+      }
+    }
 
     // Asistencia automática
     for (const h of HORARIOS_CLASE) {
@@ -604,6 +693,65 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'entrega':
         await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá a **#entregas**\n2. Escribí tu nombre y la actividad\n3. Pegá el texto o adjuntá el archivo\n4. El bot lo corrige automáticamente con IA\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
+      case 'evento': {
+        const titulo = interaction.options.getString('titulo');
+        const fecha = interaction.options.getString('fecha');
+        const tipo = interaction.options.getString('tipo');
+        const descripcion = interaction.options.getString('descripcion') || '';
+
+        if (!parseFecha(fecha)) { await interaction.editReply('❌ Fecha inválida. Usá el formato dd/mm/yyyy'); break; }
+
+        const id = eventoCounter++;
+        eventos.set(id, { titulo, fecha, tipo, descripcion, avisado3d: false, avisado1d: false, avisadoHoy: false });
+        const dias = diasRestantes(parseFecha(fecha));
+        const estadoStr = dias < 0 ? 'ya pasó' : dias === 0 ? 'es HOY' : 'en ' + dias + ' días';
+
+        await interaction.editReply(emojiTipo(tipo) + ' **Evento agregado al calendario**\n\n**#' + id + ' — ' + titulo + '**\n📅 ' + fecha + ' (' + estadoStr + ')\n\nEl bot avisará automáticamente 3 días antes, 1 día antes y el día del evento en #aviso.');
+        break;
+      }
+
+      case 'calendario': {
+        const lista = [...eventos.entries()].sort((a,b) => {
+          const fa = parseFecha(a[1].fecha);
+          const fb = parseFecha(b[1].fecha);
+          return fa - fb;
+        });
+        const futuros = lista.filter(([,ev]) => diasRestantes(parseFecha(ev.fecha)) >= 0);
+        const pasados = lista.filter(([,ev]) => diasRestantes(parseFecha(ev.fecha)) < 0);
+
+        let msg = '📅 **CALENDARIO DEL CUATRIMESTRE**\n\n';
+        if (futuros.length > 0) msg += '**Próximos eventos:**\n\n' + formatEventos(futuros);
+        if (pasados.length > 0) msg += '\n\n**Eventos pasados:**\n\n' + formatEventos(pasados);
+        if (lista.length === 0) msg += 'No hay eventos registrados. El profesor puede agregar con /evento';
+
+        await interaction.editReply(msg);
+        break;
+      }
+
+      case 'proximo': {
+        const futuros = [...eventos.entries()]
+          .filter(([,ev]) => diasRestantes(parseFecha(ev.fecha)) >= 0)
+          .sort((a,b) => parseFecha(a[1].fecha) - parseFecha(b[1].fecha));
+
+        if (futuros.length === 0) { await interaction.editReply('No hay eventos próximos en el calendario.'); break; }
+
+        const [id, ev] = futuros[0];
+        const dias = diasRestantes(parseFecha(ev.fecha));
+        const diasStr = dias === 0 ? '**HOY**' : dias === 1 ? 'mañana' : 'en **' + dias + ' días**';
+
+        await interaction.editReply(emojiTipo(ev.tipo) + ' **Próximo evento: ' + ev.titulo + '**\n\n📅 Fecha: **' + ev.fecha + '** — ' + diasStr + (ev.descripcion ? '\n📋 ' + ev.descripcion : '') + '\n\nUsá /calendario para ver todos los eventos.');
+        break;
+      }
+
+      case 'borrar-evento': {
+        const id = interaction.options.getInteger('id');
+        if (!eventos.has(id)) { await interaction.editReply('❌ No existe el evento #' + id); break; }
+        const ev = eventos.get(id);
+        eventos.delete(id);
+        await interaction.editReply('✅ Evento **' + ev.titulo + '** eliminado del calendario.');
+        break;
+      }
+
       case 'quiz': {
         const unidadNum = interaction.options.getInteger('unidad');
         const userId = interaction.user.id;
