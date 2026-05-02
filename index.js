@@ -377,9 +377,15 @@ async function moodleAPI(url, token, func, params = {}) {
     });
     const resp = await fetch(url + '/webservice/rest/server.php?' + qs.toString());
     const data = await resp.json();
-    if (data && data.exception) return null;
+    if (data && data.exception) {
+      console.error('Moodle API error:', data.message, data.errorcode);
+      return { _error: data.message, _code: data.errorcode };
+    }
     return data;
-  } catch(e) { return null; }
+  } catch(e) {
+    console.error('Moodle fetch error:', e.message);
+    return null;
+  }
 }
 
 function getMoodleConfig(guildName) {
@@ -792,14 +798,18 @@ client.on(Events.InteractionCreate, async (interaction) => {
         break;
       case 'moodle': {
         const mc = getMoodleConfig(interaction.guild?.name);
+        if (!mc.token) { await interaction.editReply('❌ Token de Moodle no configurado en Railway para ' + mc.nombre); break; }
         const cursos = await getCursos(mc.url, mc.token);
         if (!cursos) {
-          await interaction.editReply('❌ No se pudo conectar con Moodle de ' + mc.nombre + '. Verificá el token en Railway.');
+          await interaction.editReply('❌ Error de conexion con ' + mc.url + ' - Token puede ser invalido');
+          break;
+        }
+        if (cursos._error) {
+          await interaction.editReply('❌ Error Moodle: ' + cursos._error + ' (codigo: ' + cursos._code + ')');
           break;
         }
         const total = Array.isArray(cursos) ? cursos.length : 0;
-        const moodleStatus = 'Moodle ' + mc.nombre + ' conectado. Cursos: ' + total + ' - ' + mc.url;
-        await interaction.editReply(moodleStatus);
+        await interaction.editReply('✅ Moodle ' + mc.nombre + ' conectado. Cursos: ' + total + ' - ' + mc.url);
         break;
       }
 
