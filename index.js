@@ -304,10 +304,10 @@ async function getSheets() {
   return google.sheets({ version: 'v4', auth });
 }
 
-async function guardarAsistencia(nombre, fecha, hora) {
+async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
   try {
     const sheets = await getSheets();
-    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:D', valueInputOption: 'USER_ENTERED', resource: { values: [[fecha, hora, nombre, 'Presente']] } });
+    await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F', valueInputOption: 'USER_ENTERED', resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] } });
   } catch (e) { console.error('Error Sheets:', e); }
 }
 
@@ -683,7 +683,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     if (sesion.asistentes.has(userId)) { await interaction.reply({ content: `✅ **${nombre}**, ya registraste tu presencia.`, ephemeral: true }); return; }
     const hora = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
     sesion.asistentes.set(userId, { nombre, hora });
-    await guardarAsistencia(nombre, sesion.fecha, hora);
+    const materiaAsist = detectarMateria(interaction.guildId, interaction.channel?.name);
+    await guardarAsistencia(nombre, sesion.fecha, hora, materiaAsist, interaction.guild?.name || '');
     const p   = darPuntos(userId, nombre, 'asistencia');
     const rol = getRol(p.pts);
     await actualizarRolDiscord(interaction.member, p.pts);
