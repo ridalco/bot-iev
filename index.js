@@ -291,7 +291,7 @@ async function actualizarRolDiscord(member, pts) {
     const guild = member.guild;
     for (const rolDef of ROLES_PUNTOS) {
       let rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
-      if (!rol) rol = await guild.roles.create({ name: rolDef.nombre, color: rolDef.color, reason: 'Bot IEV' });
+      if (!rol) rol = await guild.roles.create({ name: rolDef.nombre, color: rolDef.color, reason: 'Mentor' });
     }
     for (const rolDef of ROLES_PUNTOS) {
       const rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
@@ -474,7 +474,7 @@ async function publicarNoticias(guild) {
       model: 'claude-sonnet-4-20250514', max_tokens: 1000,
       messages: [{ role: 'user', content: `Generá 3 noticias tecnológicas para estudiantes de Informática en Argentina. Temas: Internet, IA, educación virtual, redes, ciberseguridad.\nFormato: **🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa: [explicación]*\n\nSeparalas con una línea. Hoy es ${new Date().toLocaleDateString('es-AR')}.` }]
     });
-    await canal.send(safe(`📰 **NOTICIAS TECH — ${new Date().toLocaleDateString('es-AR')}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${resp.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Bot IEV 🤖*`, 1990));
+    await canal.send(safe(`📰 **NOTICIAS TECH — ${new Date().toLocaleDateString('es-AR')}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${resp.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`, 1990));
   } catch (e) { console.error('Error noticias:', e); }
 }
 
@@ -574,7 +574,7 @@ async function registrarComandos(guildId) {
 // BOT LISTO
 // =============================================
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ Bot IEV conectado como ${c.user.tag}`);
+  console.log(`✅ Mentor conectado como ${c.user.tag}`);
   cargarDatos();
   for (const guild of c.guilds.cache.values()) await registrarComandos(guild.id);
 
