@@ -97,6 +97,7 @@ const SOLO_PROFESOR = ['iniciar-clase', 'cerrar-clase', 'noticias', 'evento', 'b
 // =============================================
 function detectarMateria(guildId, channelName) {
   const canal = (channelName || '').toLowerCase();
+  if (canal.includes('practica') || canal.includes('pract') || canal.includes('pp3') || canal.includes('profesionalizante')) return 'practica';
   if (canal.includes('bd') || canal.includes('base') || canal.includes('datos')) return 'bd';
   if (canal.includes('info') || canal.includes('informatica'))                   return 'informatica';
   if (canal.includes('iev') || canal.includes('internet') || canal.includes('entornos')) return 'iev';
@@ -124,6 +125,13 @@ Si no sabés algo decí que consulte al profesor.`,
   informatica: `Sos el asistente de "Informática" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, 1er año, Prof. Ing. Corimayo Ricardo Daniel.
 Respondé en español, claro y pedagógico.
 Unidades: 1-Introducción (hardware, software, SO), 2-Ofimática, 3-Redes y Computación Distribuida, 4-Computación Paralela y Concurrente, 5-Inteligencia Artificial (ML, redes neuronales, PLN).
+Si no sabés algo decí que consulte al profesor.`,
+  practica: `Sos el asistente de "Práctica Profesionalizante III" de la Tecnicatura Superior en Ciencias de Datos e Inteligencia Artificial del IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
+Respondé en español, claro, pedagógico y orientado al mundo laboral.
+Esta materia tiene un enfoque práctico y profesional: los estudiantes desarrollan proyectos reales aplicando Ciencia de Datos e IA.
+Unidades: 1-Introducción a la Práctica Profesionalizante (rol profesional, ética, marcos legales), 2-Metodologías de trabajo (SCRUM, Kanban, trabajo en equipo), 3-Proyecto de Ciencia de Datos (datasets, limpieza, análisis exploratorio, visualización), 4-Aplicación de IA (modelos ML, evaluación, despliegue básico), 5-Presentación y defensa del proyecto (documentación técnica, exposición oral).
+Plataformas: Moodle IES N°6 → ies6.aulasvirtuales.name
+Cuando des ejemplos, usá Python, pandas, scikit-learn, matplotlib y herramientas del ecosistema de Ciencia de Datos.
 Si no sabés algo decí que consulte al profesor.`,
 };
 
@@ -157,6 +165,13 @@ const UNIDADES = {
     3: '🌐 **Informática — Unidad 3: Redes y Computación Distribuida**\n\nTipos de redes, protocolos. Cliente/servidor vs peer-to-peer.',
     4: '⚡ **Informática — Unidad 4: Computación Paralela**\n\nProcesadores multinúcleo, paralelismo, concurrencia.',
     5: '🤖 **Informática — Unidad 5: Inteligencia Artificial**\n\nMachine learning, redes neuronales, PLN. Tendencias futuras.',
+  },
+  practica: {
+    1: '🎯 **PP3 — Unidad 1: Introducción Profesionalizante**\n\nRol del profesional en Ciencias de Datos. Ética en el uso de datos. Marcos legales (PDPA, GDPR). Perfil laboral y mercado de trabajo en IA.',
+    2: '🔄 **PP3 — Unidad 2: Metodologías de Trabajo**\n\nSCRUM y Kanban aplicados a proyectos de datos. Roles del equipo. Sprints y backlogs. Trabajo colaborativo con GitHub y documentación.',
+    3: '📊 **PP3 — Unidad 3: Proyecto de Ciencia de Datos**\n\nSelección y obtención de datasets. Limpieza con pandas. Análisis exploratorio (EDA). Visualización con matplotlib y seaborn.',
+    4: '🤖 **PP3 — Unidad 4: Aplicación de IA**\n\nModelos ML con scikit-learn. Evaluación de métricas (accuracy, F1, ROC). Despliegue básico con Flask o Streamlit.',
+    5: '🎓 **PP3 — Unidad 5: Presentación y Defensa**\n\nDocumentación técnica del proyecto. README profesional en GitHub. Exposición oral ante el tribunal. Portfolio profesional.',
   }
 };
 
@@ -445,7 +460,7 @@ const commands = [
   new SlashCommandBuilder().setName('proximo').setDescription('Ver el próximo evento importante'),
   new SlashCommandBuilder().setName('borrar-evento').setDescription('👨‍🏫 Borrar un evento (profesor)').addIntegerOption(o => o.setName('id').setDescription('ID del evento').setRequired(true)),
   new SlashCommandBuilder().setName('quiz').setDescription('Quiz de opción múltiple (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
-  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal (profesor)').addStringOption(o => o.setName('materia').setDescription('iev, bd o informatica').setRequired(true)),
+  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal (profesor)').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica o practica').setRequired(true)),
   new SlashCommandBuilder().setName('solucionar').setDescription('Enviar tu solución al desafio activo').addStringOption(o => o.setName('codigo').setDescription('Tu solución').setRequired(true)),
   new SlashCommandBuilder().setName('soluciones').setDescription('👨‍🏫 Ver soluciones del desafio (profesor)'),
   new SlashCommandBuilder().setName('cerrar-desafio').setDescription('👨‍🏫 Cerrar desafio y anunciar ganador (profesor)'),
@@ -706,8 +721,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       case 'materia': {
         const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const nombres = { iev: 'Internet y Entornos Virtuales (IEV)', bd: 'Base de Datos', informatica: 'Informática' };
-        await interaction.editReply(`🔍 **Detección de materia**\n\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia detectada: **${nombres[materia]}**\n\nPalabras clave por canal:\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
+        const nombres = { iev: 'Internet y Entornos Virtuales (IEV)', bd: 'Base de Datos', informatica: 'Informática', practica: 'Práctica Profesionalizante III' };
+        await interaction.editReply(`🔍 **Detección de materia**\n\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia detectada: **${nombres[materia]}**\n\nPalabras clave por canal:\n• PP3 → \`practica\`, \`pract\`, \`pp3\`, \`profesionalizante\`\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
         break;
       }
 
@@ -1059,7 +1074,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
   if (canal) {
     await canal.send(esIES11
       ? `👋 ¡Bienvenido/a **${member.displayName}** al IES N°11!\n\n📚 Tecnicatura en Desarrollo de Software\n• **/preguntar** — consultas de BD o Informática con IA\n• **/quiz** — practicá con preguntas interactivas\n• **#entregas** — entregá trabajos y la IA los corrige\n• **/materia** — verificá qué materia detecta el bot`
-      : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Internet y Entornos Virtuales 2026\n• **/preguntar** — consultas con IA\n• **#entregas** — entregá y el bot corrige\n• **/ranking** — mirá tu posición\n• 📰 Noticias tech todos los días en **#noticias-tech**`
+      : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias disponibles:\n• 🌐 **Internet y Entornos Virtuales** — usá /preguntar en #iev\n• 🎯 **Práctica Profesionalizante III** — usá /preguntar en #practica\n\n• **#entregas** — entregá trabajos y la IA los corrige automáticamente\n• **/ranking** — mirá tu posición\n• **/materia** — verificá qué materia detecta el bot en cada canal\n• 📰 Noticias tech todos los días en **#noticias-tech**`
     );
   }
 });
