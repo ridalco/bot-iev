@@ -166,6 +166,7 @@ function limpiarFormulariosExpirados() {
 // =============================================
 function detectarMateria(guildId, channelName) {
   const canal = (channelName || '').toLowerCase();
+  if (canal.includes('pybd') || canal.includes('progbd') || canal.includes('programacion-bd') || canal.includes('prog-bd') || canal.includes('pybases')) return 'pybd';
   if (canal.includes('practica') || canal.includes('pract') || canal.includes('pp3') || canal.includes('profesionalizante')) return 'practica';
   if (canal.includes('bd') || canal.includes('base') || canal.includes('datos')) return 'bd';
   if (canal.includes('info') || canal.includes('informatica'))                   return 'informatica';
@@ -174,7 +175,7 @@ function detectarMateria(guildId, channelName) {
   if (guild) {
     const s = guild.name.toLowerCase();
     if (s.includes('11')) return 'bd';
-    if (s.includes('6'))  return 'iev';
+    if (s.includes('6'))  return 'iev'; // IES 6 default, PyBD se detecta por canal
   }
   return 'iev';
 }
@@ -196,6 +197,14 @@ Si no sabés algo decí que consulte al profesor.`,
   informatica: `Sos el asistente de "Informática" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, 1er año, Prof. Ing. Corimayo Ricardo Daniel.
 Respondé en español, claro y pedagógico.
 Unidades: 1-Introducción (hardware, software, SO), 2-Ofimática, 3-Redes y Computación Distribuida, 4-Computación Paralela y Concurrente, 5-Inteligencia Artificial (ML, redes neuronales, PLN).
+Si no sabés algo decí que consulte al profesor.`,
+
+  pybd: `Sos el asistente de "Programación y Base de Datos" del Profesorado de Educación Secundaria en Informática, 2do año, IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
+Respondé en español, claro y pedagógico.
+La materia combina Base de Datos con Programación en Java y Spring Boot.
+Unidades BD: 1-Introducción a BD (SGBD, modelos, DDL/DML, arquitectura), 2-Diseño conceptual E-R (entidades, atributos, relaciones, cardinalidad), 3-Modelo Relacional y lógico (normalización, vistas, procedimientos almacenados), 4-SQL completo (DDL, DML, DCL, TCL, transacciones ACID).
+Unidades Programación: 5-Java (tipos de datos, POO, clases, objetos, colecciones), 6-Spring Boot y MVC (framework, controladores, Bootstrap, Thymeleaf), 7-Git y Maven (versionamiento, gestión de dependencias), 8-Persistencia con JPA (CrudRepository, JpaRepository, conexión a BD).
+Cuando des ejemplos de código usá Java y Spring Boot.
 Si no sabés algo decí que consulte al profesor.`,
 
   practica: `Sos el asistente de "Práctica Profesionalizante III" de la Tecnicatura Superior en Ciencias de Datos e Inteligencia Artificial del IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
@@ -236,6 +245,16 @@ const UNIDADES = {
     4: '⚡ **Informática — Unidad 4: Computación Paralela**\n\nProcesadores multinúcleo, paralelismo, concurrencia.',
     5: '🤖 **Informática — Unidad 5: Inteligencia Artificial**\n\nMachine learning, redes neuronales, PLN. Tendencias futuras.',
   },
+  pybd: {
+    1: '🗄️ **PyBD — Unidad 1: Introducción a Base de Datos**\n\nConcepto de BD y SGBD. Modelos de datos. Tipos de usuarios. Administrador de BD. DDL y DML. Arquitectura de los SGBD.',
+    2: '🔗 **PyBD — Unidad 2: Diseño Conceptual — Modelo E-R**\n\nCaracterísticas de los datos. Etapas del diseño. Entidades, atributos y relaciones. Clave primaria. Cardinalidad.',
+    3: '📋 **PyBD — Unidad 3: Modelo Relacional — Modelo Lógico**\n\nEstructura relacional. Reglas de integridad. Normalización. Esquemas, dominios, tablas, vistas. Procedimientos almacenados, disparadores y privilegios.',
+    4: '💻 **PyBD — Unidad 4: SQL — Modelo Físico**\n\nDML: SELECT, INSERT, UPDATE, DELETE. DDL: CREATE, ALTER, DROP. DCL y TCL. Transacciones y propiedades ACID.',
+    5: '☕ **PyBD — Unidad 5: Lenguaje Java**\n\nTipos de datos primitivos y complejos. Strings, Arreglos y Colecciones. Programación Orientada a Objetos. Clases, objetos y métodos.',
+    6: '🌱 **PyBD — Unidad 6: Spring Boot y MVC**\n\nArquitectura RIA. Framework Spring. Controladores y RequestMapping. Spring Boot con Thymeleaf. Bootstrap: Navbar, Grillas, Cards.',
+    7: '🐙 **PyBD — Unidad 7: Git y Maven**\n\nControl de versiones con Git. Integración con IDE. Maven: estructura, gestión de dependencias, arquetipos. Spring Boot y Maven.',
+    8: '🔌 **PyBD — Unidad 8: Clases y Persistencia con JPA**\n\nClases de negocio y servicio. Inyección de dependencias. JPA con Spring Boot. CrudRepository, JpaRepository, Query Methods. Conexión a motor de BD.',
+  },
   practica: {
     1: '🎯 **PP3 — Unidad 1: Introducción Profesionalizante**\n\nRol del profesional en Ciencias de Datos. Ética. Marcos legales (PDPA, GDPR). Mercado de trabajo en IA.',
     2: '🔄 **PP3 — Unidad 2: Metodologías de Trabajo**\n\nSCRUM y Kanban aplicados a proyectos de datos. Roles. Sprints. Trabajo colaborativo con GitHub.',
@@ -256,6 +275,7 @@ const HERRAMIENTAS = {
   iev:        '🛠️ **Herramientas IEV:**\n\n📘 Chamilo → aulasvirtuales.name/chamilo\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🌐 Criterio CRAAP → usá /craap [url]\n💬 Discord → Este servidor ✅',
   bd:         '🛠️ **Herramientas Base de Datos:**\n\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk (SQL online)\n📊 draw.io → diagrams.net (Diagramas E-R)\n🐙 GitHub → github.com',
   informatica:'🛠️ **Herramientas Informática:**\n\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n📂 Google Drive → drive.google.com\n🎨 Google Slides → slides.google.com\n🐙 GitHub → github.com',
+  pybd:       '🛠️ **Herramientas PyBD — Programación y Base de Datos:**\n\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk (SQL online)\n📊 draw.io → diagrams.net (Diagramas E-R)\n☕ IntelliJ IDEA → jetbrains.com/idea (IDE Java)\n🌱 Spring Initializr → start.spring.io (proyectos Spring Boot)\n🐙 GitHub → github.com\n📦 Maven Repository → mvnrepository.com',
   practica:   '🛠️ **Herramientas PP3 — Ciencias de Datos:**\n\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐍 Google Colab → colab.research.google.com\n📊 Kaggle → kaggle.com (datasets)\n🤗 HuggingFace → huggingface.co (modelos IA)\n🐙 GitHub → github.com\n📋 Trello → trello.com (Kanban)',
 };
 
@@ -537,7 +557,7 @@ const commands = [
   new SlashCommandBuilder().setName('proximo').setDescription('Ver el próximo evento importante'),
   new SlashCommandBuilder().setName('borrar-evento').setDescription('👨‍🏫 Borrar un evento').addIntegerOption(o => o.setName('id').setDescription('ID del evento').setRequired(true)),
   new SlashCommandBuilder().setName('quiz').setDescription('Quiz interactivo (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
-  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica o practica').setRequired(true)),
+  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica, practica o pybd').setRequired(true)),
   new SlashCommandBuilder().setName('solucionar').setDescription('Enviar tu solución al desafio activo').addStringOption(o => o.setName('codigo').setDescription('Tu solución').setRequired(true)),
   new SlashCommandBuilder().setName('soluciones').setDescription('👨‍🏫 Ver soluciones del desafio'),
   new SlashCommandBuilder().setName('cerrar-desafio').setDescription('👨‍🏫 Cerrar desafio y anunciar ganador'),
@@ -774,14 +794,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
       case 'materia': {
         const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const nombres = { iev: 'Internet y Entornos Virtuales (IEV)', bd: 'Base de Datos', informatica: 'Informática', practica: 'Práctica Profesionalizante III' };
+        const nombres = { iev: 'Internet y Entornos Virtuales (IEV)', bd: 'Base de Datos', informatica: 'Informática', practica: 'Práctica Profesionalizante III', pybd: 'Programación y Base de Datos (PyBD)' };
         await interaction.editReply(`🔍 **Detección de materia**\n\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia detectada: **${nombres[materia]}**\n\nPalabras clave por canal:\n• PP3 → \`practica\`, \`pract\`, \`pp3\`\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
         break;
       }
 
       case 'ayuda': {
         const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const nombres = { iev: '📡 IEV', bd: '🗄️ Base de Datos', informatica: '💻 Informática', practica: '🎯 PP3' };
+        const nombres = { iev: '📡 IEV', bd: '🗄️ Base de Datos', informatica: '💻 Informática', practica: '🎯 PP3', pybd: '☕ PyBD' };
         await interaction.editReply(
           `📖 **Comandos disponibles** · ${nombres[materia]}\n\n` +
           `**Consultas:**\n• \`/preguntar\` — preguntá a la IA\n• \`/unidad [1-7]\` — ver contenido de una unidad\n• \`/craap [url]\` — evaluar una fuente\n\n` +
@@ -1152,7 +1172,7 @@ client.on(Events.GuildMemberAdd, async (member) => {
   if (canal) {
     await canal.send(esIES11
       ? `👋 ¡Bienvenido/a **${member.displayName}** al IES N°11!\n\n📚 Tecnicatura en Desarrollo de Software\n• **/preguntar** — consultá BD o Informática con IA\n• **/quiz** — practicá con preguntas interactivas\n• **#entregas** — entregá y la IA corrige\n• **/ayuda** — ver todos los comandos`
-      : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias:\n• 🌐 Internet y Entornos Virtuales → #iev\n• 🎯 Práctica Profesionalizante III → #practica\n\n• **#entregas** — entregá y el bot corrige\n• **/ayuda** — ver todos los comandos\n• 📰 Noticias tech en **#noticias-tech**`
+      : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias disponibles:\n• 🌐 Internet y Entornos Virtuales → #iev\n• 🎯 Práctica Profesionalizante III → #practica\n• ☕ Programación y Base de Datos → #pybd\n\n• **#entregas** — entregá y el bot corrige\n• **/ayuda** — ver todos los comandos\n• 📰 Noticias tech en **#noticias-tech**`
     );
   }
 });
