@@ -86,6 +86,7 @@ http.createServer((req, res) => {
 // ════════════════════════════════════════════════════════════════
 const DATA_FILE   = './data.json';
 const puntos      = new Map(); // userId  → { nombre, pts, entregas, asistencias, preguntas }
+const registros   = new Map(); // userId  → { nombreReal, dni, carrera, registradoEn }
 const tareas      = new Map(); // id      → { titulo, descripcion, fecha, canal, completados: Set }
 const eventos     = new Map(); // id      → { titulo, fecha, tipo, descripcion, avisados }
 let tareaCounter  = 1;
@@ -99,6 +100,7 @@ function cargarDatos() {
     if (raw.eventos) for (const [k, v] of Object.entries(raw.eventos)) eventos.set(parseInt(k), v);
     if (raw.tareas)  for (const [k, v] of Object.entries(raw.tareas))
       tareas.set(parseInt(k), { ...v, completados: new Set(v.completados || []) });
+    if (raw.registros) for (const [k, v] of Object.entries(raw.registros)) registros.set(k, v);
     if (raw.tareaCounter)  tareaCounter  = raw.tareaCounter;
     if (raw.eventoCounter) eventoCounter = raw.eventoCounter;
     LOG.info(`Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
@@ -113,6 +115,7 @@ function guardarDatos() {
     try {
       fs.writeFileSync(DATA_FILE, JSON.stringify({
         puntos:       Object.fromEntries(puntos),
+        registros:    Object.fromEntries(registros),
         eventos:      Object.fromEntries(eventos),
         tareas:       Object.fromEntries([...tareas.entries()].map(([k, v]) => [k, { ...v, completados: [...v.completados] }])),
         tareaCounter,
@@ -174,7 +177,7 @@ function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
 // Comandos restringidos al profesor
 const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
-  'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte'
+  'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -399,6 +402,14 @@ async function getSheets() {
   return google.sheets({ version: 'v4', auth });
 }
 
+// ════════════════════════════════════════════════════════════════
+// REGISTRO DE ALUMNOS — nombre real
+// ════════════════════════════════════════════════════════════════
+function getNombreReal(userId, fallback) {
+  const reg = registros.get(userId);
+  return reg ? reg.nombreReal : fallback;
+}
+
 async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
   try {
     const sheets = await getSheets();
@@ -563,6 +574,12 @@ const commands = [
   new SlashCommandBuilder().setName('misnota').setDescription('Consultar tus notas en Moodle').addStringOption(o => o.setName('nombre').setDescription('Tu nombre completo en Moodle').setRequired(true)),
   new SlashCommandBuilder().setName('actividades').setDescription('Ver actividades de un curso Moodle').addIntegerOption(o => o.setName('curso').setDescription('ID del curso (usá /miscursos)').setRequired(true)),
   new SlashCommandBuilder().setName('materia').setDescription('Ver qué materia detecta el bot en este canal'),
+  new SlashCommandBuilder().setName('registrarme')
+    .setDescription('Registrá tu nombre real para que aparezca en la asistencia')
+    .addStringOption(o => o.setName('nombre').setDescription('Tu nombre y apellido completo').setRequired(true))
+    .addStringOption(o => o.setName('carrera').setDescription('Tu carrera (ej: Tecnicatura en Desarrollo de Software)').setRequired(false)),
+  new SlashCommandBuilder().setName('misregistro').setDescription('Ver tu registro actual'),
+  new SlashCommandBuilder().setName('alumnos').setDescription('👨‍🏫 Ver listado de alumnos registrados (profesor)'),
   new SlashCommandBuilder().setName('ayuda').setDescription('Ver todos los comandos disponibles'),
 ];
 
@@ -757,7 +774,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const sesion = getSesion(interaction.guildId);
     if (!sesion.activa) { await interaction.reply({ content: '⚠️ La clase ya cerró.', ephemeral: true }); return; }
     const uid    = interaction.user.id;
-    const nombre = interaction.member?.displayName || interaction.user.username;
+    const discordNombre = interaction.member?.displayName || interaction.user.username;
+    const nombre = getNombreReal(uid, discordNombre); // usa nombre real si está registrado
     if (sesion.asistentes.has(uid)) { await interaction.reply({ content: `✅ **${nombre}**, ya registraste tu presencia.`, ephemeral: true }); return; }
     const hora = horaAR();
     sesion.asistentes.set(uid, { nombre, hora });
@@ -766,7 +784,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const p   = darPuntos(uid, nombre, 'asistencia');
     const rol = getRol(p.pts);
     await actualizarRol(interaction.member, p.pts);
-    await interaction.reply({ content: `✅ **${nombre}** — presencia a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` });
+    const sinRegistro = !registros.has(uid) ? '\n\n💡 *Tip: usá /registrarme para que tu nombre real aparezca en el registro.*' : '';
+    await interaction.reply({ content: `✅ **${nombre}** — presencia a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**${sinRegistro}` });
     return;
   }
 
@@ -1139,6 +1158,71 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await backupPuntos();
         await interaction.editReply(`✅ Backup completado — ${puntos.size} alumnos guardados.`);
         break;
+
+      case 'registrarme': {
+        const uid         = interaction.user.id;
+        const nombreReal  = interaction.options.getString('nombre').trim();
+        const carrera     = interaction.options.getString('carrera') || '';
+        if (nombreReal.length < 3) { await interaction.editReply('❌ El nombre debe tener al menos 3 caracteres.'); break; }
+        const yaExistia   = registros.has(uid);
+        registros.set(uid, {
+          nombreReal,
+          carrera,
+          discordUser: interaction.user.username,
+          registradoEn: ahoraAR(),
+        });
+        guardarDatos();
+        await interaction.editReply(
+          `${yaExistia ? '✏️ **Registro actualizado**' : '✅ **Registro exitoso**'}
+
+` +
+          `👤 **Nombre real:** ${nombreReal}
+` +
+          `🎓 **Carrera:** ${carrera || 'No especificada'}
+` +
+          `💬 **Discord:** @${interaction.user.username}
+
+` +
+          `A partir de ahora tu nombre real aparecerá en la asistencia y el dashboard.`
+        );
+        break;
+      }
+
+      case 'misregistro': {
+        const uid = interaction.user.id;
+        const reg = registros.get(uid);
+        if (!reg) {
+          await interaction.editReply('❌ No estás registrado todavía. Usá `/registrarme nombre:[tu nombre completo]` para registrarte.');
+          break;
+        }
+        await interaction.editReply(
+          `📋 **Tu registro actual:**
+
+` +
+          `👤 **Nombre real:** ${reg.nombreReal}
+` +
+          `🎓 **Carrera:** ${reg.carrera || 'No especificada'}
+` +
+          `💬 **Discord:** @${reg.discordUser || interaction.user.username}
+` +
+          `📅 **Registrado:** ${reg.registradoEn}
+
+` +
+          `Para actualizar usá \`/registrarme\` de nuevo.`
+        );
+        break;
+      }
+
+      case 'alumnos': {
+        if (!registros.size) { await interaction.editReply('No hay alumnos registrados todavía.'); break; }
+        const lista = [...registros.entries()]
+          .map(([uid, r], i) => `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'}) — ${r.carrera||'sin carrera'}`).join('
+');
+        await interaction.editReply(safe(`👥 **Alumnos registrados (${registros.size}):**
+
+${lista}`));
+        break;
+      }
     }
   } catch (e) {
     LOG.error(`Error en /${interaction.commandName}`, e);
