@@ -260,22 +260,24 @@ client.on(Events.InteractionCreate, async interaction => {
     }
 
   } catch (error) {
-    console.error(chalk.red('Error en interacción:'), error);
-    if (!interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: '❌ Ocurrió un error. Intentá de nuevo.', ephemeral: true });
+    } catch (error) {
+      console.error('Error en interacción:', error);
+      if (!interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: '❌ Ocurrió un error. Intentá de nuevo.', ephemeral: true });
+      }
     }
   }
 });
-// ====================== PARTE 5/5 - LOGIN FINAL ======================
+
+// ====================== LOGIN FINAL ======================
 client.login(DISCORD_TOKEN).catch(err => {
-  console.error(chalk.red('❌ Error al hacer login:'), err);
+  console.error('❌ Error al hacer login:', err);
 });
 
-console.log(chalk.blue.bold('🚀 Bot IEV v2.0 cargado correctamente'));
-console.log(chalk.cyan(`   Hora Argentina: ${horaCortaArgentina()}`));
+console.log('🚀 Bot IEV v2.0 cargado correctamente');
+console.log(`Hora Argentina: ${horaCortaArgentina()}`);
 
 // Cargar datos persistentes al iniciar
 cargarDatos();
 
-console.log(chalk.green('✅ Todo listo para Render'));
-  
+console.log('✅ Todo listo para Render');
