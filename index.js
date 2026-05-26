@@ -1,9 +1,11 @@
-// =============================================
-// BOT MENTOR — IES N°6 / IES N°11
-// Versión completa para Render.com
-// Prof. Ing. Corimayo Ricardo Daniel
-// =============================================
+// ╔══════════════════════════════════════════════════════════════╗
+// ║          BOT MENTOR — IES N°6 / IES N°11                    ║
+// ║          Prof. Ing. Corimayo Ricardo Daniel                  ║
+// ║          Versión 4.0 — Producción en Render.com              ║
+// ╚══════════════════════════════════════════════════════════════╝
+'use strict';
 require('dotenv').config();
+
 const fs   = require('fs');
 const http = require('http');
 const {
@@ -11,75 +13,87 @@ const {
   SlashCommandBuilder, REST, Routes,
   ActionRowBuilder, ButtonBuilder, ButtonStyle
 } = require('discord.js');
-const Anthropic   = require('@anthropic-ai/sdk');
-const { google }  = require('googleapis');
+const Anthropic  = require('@anthropic-ai/sdk');
+const { google } = require('googleapis');
 
-// =============================================
-// KEEP-ALIVE PARA RENDER
-// Render necesita un servidor HTTP activo para
-// no apagar el servicio en el plan gratuito.
-// =============================================
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end('Mentor bot activo ✅');
-}).listen(PORT, () => console.log(`🌐 Keep-alive escuchando en puerto ${PORT}`));
+// ════════════════════════════════════════════════════════════════
+// LOGGING PROFESIONAL
+// ════════════════════════════════════════════════════════════════
+const LOG = {
+  info:  (msg) => console.log (`[${horaAR()}] ✅ ${msg}`),
+  warn:  (msg) => console.warn(`[${horaAR()}] ⚠️  ${msg}`),
+  error: (msg, err) => console.error(`[${horaAR()}] ❌ ${msg}`, err || ''),
+  cmd:   (msg) => console.log (`[${horaAR()}] 💬 ${msg}`),
+};
 
-// =============================================
-// VALIDACIÓN DE VARIABLES AL INICIO
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// HORA ARGENTINA — siempre UTC-3
+// ════════════════════════════════════════════════════════════════
+const TZ = 'America/Argentina/Buenos_Aires';
+function horaAR()  { return new Date().toLocaleTimeString ('es-AR', { timeZone: TZ, hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
+function fechaAR() { return new Date().toLocaleDateString ('es-AR', { timeZone: TZ }); }
+function ahoraAR() { return new Date().toLocaleString    ('es-AR', { timeZone: TZ }); }
+function fechaHoraAR() {
+  const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: TZ }));
+  return { dia: ahora.getDay(), hora: ahora.getHours(), min: ahora.getMinutes() };
+}
+
+// ════════════════════════════════════════════════════════════════
+// VALIDACIÓN ESTRICTA DE VARIABLES DE ENTORNO
+// ════════════════════════════════════════════════════════════════
 const VARS_REQUERIDAS = ['DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'SPREADSHEET_ID', 'GOOGLE_CREDENTIALS'];
 const faltantes = VARS_REQUERIDAS.filter(v => !process.env[v]);
-if (faltantes.length > 0) {
-  console.error(`❌ Faltan variables de entorno: ${faltantes.join(', ')}`);
+if (faltantes.length) {
+  console.error(`\n❌ VARIABLES FALTANTES EN RENDER: ${faltantes.join(', ')}\n`);
   process.exit(1);
 }
 
 let GOOGLE_CREDENTIALS;
 try {
   GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-} catch (e) {
-  console.error('❌ GOOGLE_CREDENTIALS no es JSON válido.');
+} catch {
+  console.error('❌ GOOGLE_CREDENTIALS no es JSON válido. Revisá la variable en Render.');
   process.exit(1);
 }
 
+// Constantes de configuración
 const DISCORD_TOKEN      = process.env.DISCORD_TOKEN;
 const CLIENT_ID          = '1497945827874967733';
 const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID     = process.env.SPREADSHEET_ID;
-const PROFESOR_ID        = process.env.PROFESOR_ID;
-const MOODLE_TOKEN_IES6  = process.env.MOODLE_TOKEN_IES6;
-const MOODLE_TOKEN_IES11 = process.env.MOODLE_TOKEN_IES11;
+const PROFESOR_ID        = process.env.PROFESOR_ID   || null;
+const MOODLE_TOKEN_IES6  = process.env.MOODLE_TOKEN_IES6  || null;
+const MOODLE_TOKEN_IES11 = process.env.MOODLE_TOKEN_IES11 || null;
 const MOODLE_URL_IES6    = 'https://ies6.aulasvirtuales.name';
 const MOODLE_URL_IES11   = 'https://ies11.aulasvirtuales.name';
+const PORT               = process.env.PORT || 3000;
 const CANAL_NOTICIAS     = 'noticias-tech';
+const COOLDOWN_SEG       = 30;
+const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
 
-// =============================================
-// HORA ARGENTINA — siempre zona correcta
-// =============================================
-function ahoraAR() {
-  return new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
-}
-function horaAR() {
-  return new Date().toLocaleTimeString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires', hour: '2-digit', minute: '2-digit' });
-}
-function fechaAR() {
-  return new Date().toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' });
-}
+// ════════════════════════════════════════════════════════════════
+// KEEP-ALIVE HTTP — necesario para Render plan gratuito
+// ════════════════════════════════════════════════════════════════
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end(`Mentor bot activo — ${ahoraAR()}`);
+}).listen(PORT, () => LOG.info(`Keep-alive HTTP en puerto ${PORT}`));
 
-// =============================================
-// PERSISTENCIA DE DATOS
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// PERSISTENCIA DE DATOS EN DISCO
+// Sobrevive reinicios en Render (si tiene disco persistente)
+// Sin disco, se recarga vacío al reiniciar — comportamiento esperado
+// ════════════════════════════════════════════════════════════════
 const DATA_FILE   = './data.json';
-const puntos      = new Map();
-const tareas      = new Map();
-const eventos     = new Map();
+const puntos      = new Map(); // userId  → { nombre, pts, entregas, asistencias, preguntas }
+const tareas      = new Map(); // id      → { titulo, descripcion, fecha, canal, completados: Set }
+const eventos     = new Map(); // id      → { titulo, fecha, tipo, descripcion, avisados }
 let tareaCounter  = 1;
 let eventoCounter = 1;
 
 function cargarDatos() {
   try {
-    if (!fs.existsSync(DATA_FILE)) return;
+    if (!fs.existsSync(DATA_FILE)) { LOG.warn('data.json no encontrado, arrancando vacío.'); return; }
     const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
     if (raw.puntos)  for (const [k, v] of Object.entries(raw.puntos))  puntos.set(k, v);
     if (raw.eventos) for (const [k, v] of Object.entries(raw.eventos)) eventos.set(parseInt(k), v);
@@ -87,208 +101,202 @@ function cargarDatos() {
       tareas.set(parseInt(k), { ...v, completados: new Set(v.completados || []) });
     if (raw.tareaCounter)  tareaCounter  = raw.tareaCounter;
     if (raw.eventoCounter) eventoCounter = raw.eventoCounter;
-    console.log(`✅ Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
-  } catch (e) { console.error('Error cargando datos:', e); }
+    LOG.info(`Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
+  } catch (e) { LOG.error('Error cargando datos', e); }
 }
 
-let _saveTimeout = null;
+// Debounce: agrupa escrituras para no golpear el disco en cada interacción
+let _saveTimer = null;
 function guardarDatos() {
-  if (_saveTimeout) clearTimeout(_saveTimeout);
-  _saveTimeout = setTimeout(() => {
+  if (_saveTimer) clearTimeout(_saveTimer);
+  _saveTimer = setTimeout(() => {
     try {
-      const data = {
+      fs.writeFileSync(DATA_FILE, JSON.stringify({
         puntos:       Object.fromEntries(puntos),
         eventos:      Object.fromEntries(eventos),
         tareas:       Object.fromEntries([...tareas.entries()].map(([k, v]) => [k, { ...v, completados: [...v.completados] }])),
         tareaCounter,
         eventoCounter,
-      };
-      fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-    } catch (e) { console.error('Error guardando datos:', e); }
+      }, null, 2));
+    } catch (e) { LOG.error('Error guardando datos', e); }
   }, 3000);
 }
 
-// =============================================
-// SESIÓN POR SERVIDOR
-// =============================================
-const sesiones = new Map();
+// ════════════════════════════════════════════════════════════════
+// ESTADO EN MEMORIA (no persiste entre reinicios — es esperado)
+// ════════════════════════════════════════════════════════════════
+const sesiones          = new Map(); // guildId → { activa, asistentes, fecha, preguntas }
+const formularioActivo  = new Map(); // userId  → { paso, nombre, actividad, link, comentario, expira }
+const cooldowns         = new Map(); // userId  → timestamp
+const quizActivo        = new Map(); // userId  → { pregunta, opciones, correcta, explicacion, unidad, respondido }
+const desafios          = new Map(); // id      → { enunciado, materia, soluciones }
+const entregasPorActiv  = new Map(); // clave   → [{ nombre, userId, contenido, hora }]
+let desafioActivo       = null;
+let desafioCounter      = 1;
+const HORARIOS_CLASE    = [{ dia: 2, hora: 8, min: 0 }, { dia: 4, hora: 8, min: 0 }];
+
+// ════════════════════════════════════════════════════════════════
+// HELPERS GENERALES
+// ════════════════════════════════════════════════════════════════
+
+/** Trunca texto al límite de Discord (2000 chars) */
+function safe(texto, max = 1900) {
+  if (!texto) return '—';
+  return texto.length > max ? texto.substring(0, max) + '\n…*(respuesta truncada)*' : texto;
+}
+
+/** Verifica cooldown — retorna segundos restantes (0 = puede usar) */
+function checkCooldown(userId) {
+  const ahora = Date.now(), ultimo = cooldowns.get(userId) || 0;
+  const resta = COOLDOWN_SEG * 1000 - (ahora - ultimo);
+  if (resta > 0) return Math.ceil(resta / 1000);
+  cooldowns.set(userId, ahora);
+  return 0;
+}
+
+/** Devuelve o crea la sesión de clase de un servidor */
 function getSesion(guildId) {
   if (!sesiones.has(guildId))
     sesiones.set(guildId, { activa: false, asistentes: new Map(), fecha: '', preguntas: [] });
   return sesiones.get(guildId);
 }
 
-// =============================================
-// PERMISOS DEL PROFESOR
-// =============================================
-function esProfesor(userId) {
-  if (!PROFESOR_ID) return true;
-  return userId === PROFESOR_ID;
-}
-const SOLO_PROFESOR = ['iniciar-clase', 'cerrar-clase', 'noticias', 'evento', 'borrar-evento',
-  'desafio', 'soluciones', 'cerrar-desafio', 'tarea', 'similitudes', 'backup', 'reporte'];
-
-// =============================================
-// COOLDOWN ANTI-SPAM
-// =============================================
-const cooldowns = new Map();
-const COOLDOWN_SEGUNDOS = 30;
-function verificarCooldown(userId) {
-  const ahora  = Date.now();
-  const ultimo = cooldowns.get(userId) || 0;
-  const diff   = COOLDOWN_SEGUNDOS * 1000 - (ahora - ultimo);
-  if (diff > 0) return Math.ceil(diff / 1000);
-  cooldowns.set(userId, ahora);
-  return 0;
-}
-
-// =============================================
-// TRUNCADO SEGURO (límite Discord 2000 chars)
-// =============================================
-function safe(texto, max = 1900) {
-  if (!texto) return '—';
-  return texto.length > max ? texto.substring(0, max) + '\n…*(respuesta truncada)*' : texto;
-}
-
-// =============================================
-// FORMULARIO DE ENTREGAS CON TIMEOUT
-// =============================================
-const formularioActivo   = new Map();
-const FORMULARIO_TIMEOUT = 10 * 60 * 1000;
-function limpiarFormulariosExpirados() {
+/** Limpia formularios de entrega expirados */
+function limpiarFormularios() {
   const ahora = Date.now();
-  for (const [uid, form] of formularioActivo.entries())
-    if (ahora > form.expira) formularioActivo.delete(uid);
+  for (const [uid, f] of formularioActivo.entries())
+    if (ahora > f.expira) { formularioActivo.delete(uid); }
 }
 
-// =============================================
-// DETECCIÓN DE MATERIA
-// =============================================
-function detectarMateria(guildId, channelName) {
-  const canal = (channelName || '').toLowerCase();
-  if (canal.includes('pybd') || canal.includes('progbd') || canal.includes('programacion-bd') || canal.includes('prog-bd') || canal.includes('pybases')) return 'pybd';
-  if (canal.includes('practica') || canal.includes('pract') || canal.includes('pp3') || canal.includes('profesionalizante')) return 'practica';
-  if (canal.includes('bd') || canal.includes('base') || canal.includes('datos')) return 'bd';
-  if (canal.includes('info') || canal.includes('informatica'))                   return 'informatica';
-  if (canal.includes('iev') || canal.includes('internet') || canal.includes('entornos')) return 'iev';
+/** Verifica si el usuario es el profesor */
+function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
+
+// Comandos restringidos al profesor
+const SOLO_PROFESOR = new Set([
+  'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
+  'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte'
+]);
+
+// ════════════════════════════════════════════════════════════════
+// DETECCIÓN DE MATERIA — CASCADA: canal → servidor → default
+// ════════════════════════════════════════════════════════════════
+function detectarMateria(guildId, channelName = '') {
+  const c = channelName.toLowerCase();
+  if (c.includes('pybd')  || c.includes('progbd')  || c.includes('prog-bd') || c.includes('pybases') || c.includes('consultas-pybd')) return 'pybd';
+  if (c.includes('practica') || c.includes('pract') || c.includes('pp3'))                                                              return 'practica';
+  if (c.includes('bd')    || c.includes('base')    || c.includes('datos'))                                                            return 'bd';
+  if (c.includes('info')  || c.includes('informatica'))                                                                               return 'informatica';
+  if (c.includes('iev')   || c.includes('internet') || c.includes('entornos'))                                                       return 'iev';
   const guild = client.guilds.cache.get(guildId);
   if (guild) {
     const s = guild.name.toLowerCase();
     if (s.includes('11')) return 'bd';
-    if (s.includes('6'))  return 'iev'; // IES 6 default, PyBD se detecta por canal
+    if (s.includes('6'))  return 'iev';
   }
   return 'iev';
 }
 
-// =============================================
-// CONTEXTOS POR MATERIA
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// CONTEXTOS DE IA POR MATERIA
+// ════════════════════════════════════════════════════════════════
 const CONTEXTOS = {
-  iev: `Sos el asistente de "Internet y Entornos Virtuales" del Profesorado en Informática del IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
-Respondé en español, claro y pedagógico.
-Unidades: 1-Introducción a Internet (TCP/IP, HTTP, comandos CMD), 2-Correo y netiqueta (SMTP, POP3, IMAP), 3-Criterio CRAAP, 4-Comunicación sincrónica/asincrónica, 5-Entornos virtuales Chamilo/Moodle.
-Si no sabés algo decí que consulte al profesor.`,
+  iev: `Sos el asistente de "Internet y Entornos Virtuales" del Profesorado en Informática del IES N°6.
+Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
+Unidades: 1-Introducción a Internet (TCP/IP, HTTP, CMD), 2-Correo y netiqueta (SMTP/POP3/IMAP), 3-Criterio CRAAP, 4-Comunicación sincrónica/asincrónica, 5-Entornos virtuales Chamilo/Moodle.`,
 
-  bd: `Sos el asistente de "Base de Datos" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, Prof. Ing. Corimayo Ricardo Daniel.
-Respondé en español, claro y pedagógico.
-Unidades: 1-Introducción SGBD (DDL/DML, abstracción), 2-Modelo de datos, 3-Diseño E-R (entidades, relaciones, cardinalidad), 4-Modelo Relacional (claves, vistas), 5-Normalización (1FN-5FN, BCNF), 6-Álgebra Relacional, 7-SQL (CREATE/ALTER/DROP, SELECT/INSERT/UPDATE/DELETE).
-Si no sabés algo decí que consulte al profesor.`,
+  bd: `Sos el asistente de "Base de Datos" de la Tecnicatura en Desarrollo de Software del IES N°11.
+Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
+Unidades: 1-Introducción SGBD (DDL/DML), 2-Modelo de datos, 3-Diseño E-R (entidades, relaciones, cardinalidad), 4-Modelo Relacional (claves, vistas), 5-Normalización (1FN-5FN, BCNF), 6-Álgebra Relacional, 7-SQL (DDL/DML completo).`,
 
-  informatica: `Sos el asistente de "Informática" de la Tecnicatura Superior en Desarrollo de Software del IES N°11, 1er año, Prof. Ing. Corimayo Ricardo Daniel.
-Respondé en español, claro y pedagógico.
-Unidades: 1-Introducción (hardware, software, SO), 2-Ofimática, 3-Redes y Computación Distribuida, 4-Computación Paralela y Concurrente, 5-Inteligencia Artificial (ML, redes neuronales, PLN).
-Si no sabés algo decí que consulte al profesor.`,
+  informatica: `Sos el asistente de "Informática" de la Tecnicatura en Desarrollo de Software del IES N°11, 1er año.
+Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
+Unidades: 1-Introducción (HW, SW, SO), 2-Ofimática, 3-Redes y Computación Distribuida, 4-Computación Paralela, 5-Inteligencia Artificial (ML, redes neuronales, PLN).`,
 
-  pybd: `Sos el asistente de "Programación y Base de Datos" del Profesorado de Educación Secundaria en Informática, 2do año, IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
-Respondé en español, claro y pedagógico.
-La materia combina Base de Datos con Programación en Java y Spring Boot.
-Unidades BD: 1-Introducción a BD (SGBD, modelos, DDL/DML, arquitectura), 2-Diseño conceptual E-R (entidades, atributos, relaciones, cardinalidad), 3-Modelo Relacional y lógico (normalización, vistas, procedimientos almacenados), 4-SQL completo (DDL, DML, DCL, TCL, transacciones ACID).
-Unidades Programación: 5-Java (tipos de datos, POO, clases, objetos, colecciones), 6-Spring Boot y MVC (framework, controladores, Bootstrap, Thymeleaf), 7-Git y Maven (versionamiento, gestión de dependencias), 8-Persistencia con JPA (CrudRepository, JpaRepository, conexión a BD).
-Cuando des ejemplos de código usá Java y Spring Boot.
-Si no sabés algo decí que consulte al profesor.`,
+  practica: `Sos el asistente de "Práctica Profesionalizante III" de la Tecnicatura en Ciencias de Datos e IA del IES N°6.
+Prof. Ing. Corimayo Ricardo Daniel. Respondé con enfoque laboral y pedagógico.
+Unidades: 1-Introducción profesional (ética, marcos legales), 2-Metodologías (SCRUM, Kanban, GitHub), 3-Proyecto de Ciencia de Datos (pandas, EDA, visualización), 4-Aplicación de IA (scikit-learn, métricas, despliegue), 5-Defensa del proyecto.
+Usá Python, pandas, scikit-learn y matplotlib en los ejemplos.`,
 
-  practica: `Sos el asistente de "Práctica Profesionalizante III" de la Tecnicatura Superior en Ciencias de Datos e Inteligencia Artificial del IES N°6, Prof. Ing. Corimayo Ricardo Daniel.
-Respondé en español, claro, pedagógico y orientado al mundo laboral.
-Unidades: 1-Introducción (rol profesional, ética, marcos legales), 2-Metodologías (SCRUM, Kanban, GitHub), 3-Proyecto de Ciencia de Datos (datasets, pandas, EDA, visualización), 4-Aplicación de IA (scikit-learn, métricas, despliegue), 5-Presentación y defensa del proyecto.
-Cuando des ejemplos usá Python, pandas, scikit-learn, matplotlib.
-Si no sabés algo decí que consulte al profesor.`,
+  pybd: `Sos el asistente de "Programación y Base de Datos" del Profesorado de Informática, 2do año, IES N°6.
+Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
+Unidades BD: 1-Introducción BD/SGBD, 2-Diseño E-R, 3-Modelo Relacional/Normalización, 4-SQL (DDL/DML/DCL/TCL/ACID).
+Unidades Programación: 5-Java (tipos, POO, clases, colecciones), 6-Spring Boot y MVC (framework, controladores, Bootstrap, Thymeleaf), 7-Git y Maven (versionamiento, dependencias), 8-JPA y persistencia (CrudRepository, JpaRepository).
+Usá Java y Spring Boot en los ejemplos de código.`,
 };
 
-function getContexto(guildId, channelName) {
-  return CONTEXTOS[detectarMateria(guildId, channelName)];
-}
+function getContexto(guildId, ch) { return CONTEXTOS[detectarMateria(guildId, ch)] || CONTEXTOS.iev; }
 
-// =============================================
-// UNIDADES POR MATERIA
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// CONTENIDO DE UNIDADES POR MATERIA
+// ════════════════════════════════════════════════════════════════
 const UNIDADES = {
   iev: {
-    1: '🌐 **IEV — Unidad 1: Introducción a Internet**\n\nProtocolos TCP/IP, HTTP, HTTPS, FTP. Comandos CMD: ping, tracert, ipconfig, nslookup.',
-    2: '📧 **IEV — Unidad 2: Correo y Netiqueta**\n\nSMTP, POP3, IMAP. Netiqueta digital. CC vs CCO.',
-    3: '🔍 **IEV — Unidad 3: Búsqueda y Evaluación**\n\nCriterio CRAAP. Fake news. Probá: /craap [url]',
-    4: '💬 **IEV — Unidad 4: Comunicación**\n\nSincrónica vs Asincrónica. Discord, Meet, Zoom. Foros.',
-    5: '🖥️ **IEV — Unidad 5: Entornos Virtuales**\n\nChamilo y Moodle. Roles. Proyecto final: Aula virtual.',
+    1: '🌐 **IEV U1: Introducción a Internet**\nTCP/IP, HTTP, HTTPS, FTP. CMD: ping, tracert, ipconfig, nslookup.',
+    2: '📧 **IEV U2: Correo y Netiqueta**\nSMTP, POP3, IMAP. Netiqueta digital. CC vs CCO.',
+    3: '🔍 **IEV U3: Búsqueda y Evaluación**\nCriterio CRAAP. Fake news. Probá: /craap [url]',
+    4: '💬 **IEV U4: Comunicación**\nSincrónica vs Asincrónica. Discord, Meet, Zoom, Foros.',
+    5: '🖥️ **IEV U5: Entornos Virtuales**\nChamilo y Moodle. Roles. Proyecto final: Aula virtual.',
   },
   bd: {
-    1: '🗄️ **BD — Unidad 1: Introducción y Arquitectura SGBD**\n\nDefinición de BD y SGBD, niveles de abstracción (físico, conceptual, externo), DDL y DML.',
-    2: '📊 **BD — Unidad 2: Modelo de Datos**\n\nModelos conceptuales vs lógicos. Restricciones de integridad.',
-    3: '🔗 **BD — Unidad 3: Diseño y Diagrama E-R**\n\nEntidades, atributos, relaciones, cardinalidad, herencia.',
-    4: '📋 **BD — Unidad 4: Modelo Relacional**\n\nClaves primarias y foráneas, vistas, consultas relacionales.',
-    5: '📐 **BD — Unidad 5: Normalización**\n\nDependencias funcionales. 1FN, 2FN, 3FN, BCNF, 4FN, 5FN.',
-    6: '🔢 **BD — Unidad 6: Álgebra y Cálculo Relacional**\n\nOperadores primitivos y derivados.',
-    7: '💻 **BD — Unidad 7: SQL**\n\nDDL: CREATE, ALTER, DROP. DML: SELECT, INSERT, UPDATE, DELETE. Vistas, subconsultas.',
+    1: '🗄️ **BD U1: Introducción y Arquitectura SGBD**\nConcepto BD/SGBD, abstracción (físico/conceptual/externo), DDL y DML.',
+    2: '📊 **BD U2: Modelo de Datos**\nModelos conceptuales vs lógicos. Restricciones de integridad.',
+    3: '🔗 **BD U3: Diseño E-R**\nEntidades, atributos, relaciones, cardinalidad, herencia.',
+    4: '📋 **BD U4: Modelo Relacional**\nClaves primarias/foráneas, restricciones, vistas, consultas.',
+    5: '📐 **BD U5: Normalización**\nDependencias funcionales. 1FN, 2FN, 3FN, BCNF, 4FN, 5FN.',
+    6: '🔢 **BD U6: Álgebra y Cálculo Relacional**\nOperadores primitivos y derivados. Cálculo de tuplas y dominios.',
+    7: '💻 **BD U7: SQL Completo**\nDDL: CREATE/ALTER/DROP. DML: SELECT/INSERT/UPDATE/DELETE. Vistas, subconsultas.',
   },
   informatica: {
-    1: '💻 **Informática — Unidad 1: Introducción**\n\nHardware, software, sistemas operativos. Evolución histórica.',
-    2: '📝 **Informática — Unidad 2: Ofimática**\n\nProcesadores de texto, hojas de cálculo, presentaciones.',
-    3: '🌐 **Informática — Unidad 3: Redes y Computación Distribuida**\n\nTipos de redes, protocolos. Cliente/servidor vs peer-to-peer.',
-    4: '⚡ **Informática — Unidad 4: Computación Paralela**\n\nProcesadores multinúcleo, paralelismo, concurrencia.',
-    5: '🤖 **Informática — Unidad 5: Inteligencia Artificial**\n\nMachine learning, redes neuronales, PLN. Tendencias futuras.',
-  },
-  pybd: {
-    1: '🗄️ **PyBD — Unidad 1: Introducción a Base de Datos**\n\nConcepto de BD y SGBD. Modelos de datos. Tipos de usuarios. Administrador de BD. DDL y DML. Arquitectura de los SGBD.',
-    2: '🔗 **PyBD — Unidad 2: Diseño Conceptual — Modelo E-R**\n\nCaracterísticas de los datos. Etapas del diseño. Entidades, atributos y relaciones. Clave primaria. Cardinalidad.',
-    3: '📋 **PyBD — Unidad 3: Modelo Relacional — Modelo Lógico**\n\nEstructura relacional. Reglas de integridad. Normalización. Esquemas, dominios, tablas, vistas. Procedimientos almacenados, disparadores y privilegios.',
-    4: '💻 **PyBD — Unidad 4: SQL — Modelo Físico**\n\nDML: SELECT, INSERT, UPDATE, DELETE. DDL: CREATE, ALTER, DROP. DCL y TCL. Transacciones y propiedades ACID.',
-    5: '☕ **PyBD — Unidad 5: Lenguaje Java**\n\nTipos de datos primitivos y complejos. Strings, Arreglos y Colecciones. Programación Orientada a Objetos. Clases, objetos y métodos.',
-    6: '🌱 **PyBD — Unidad 6: Spring Boot y MVC**\n\nArquitectura RIA. Framework Spring. Controladores y RequestMapping. Spring Boot con Thymeleaf. Bootstrap: Navbar, Grillas, Cards.',
-    7: '🐙 **PyBD — Unidad 7: Git y Maven**\n\nControl de versiones con Git. Integración con IDE. Maven: estructura, gestión de dependencias, arquetipos. Spring Boot y Maven.',
-    8: '🔌 **PyBD — Unidad 8: Clases y Persistencia con JPA**\n\nClases de negocio y servicio. Inyección de dependencias. JPA con Spring Boot. CrudRepository, JpaRepository, Query Methods. Conexión a motor de BD.',
+    1: '💻 **Informática U1: Introducción**\nHardware, software, sistemas operativos. Evolución histórica.',
+    2: '📝 **Informática U2: Ofimática**\nProcesadores de texto, hojas de cálculo, presentaciones.',
+    3: '🌐 **Informática U3: Redes y Computación Distribuida**\nProtocolos, cliente/servidor, peer-to-peer, computación móvil.',
+    4: '⚡ **Informática U4: Computación Paralela**\nProcesadores multinúcleo, paralelismo, concurrencia.',
+    5: '🤖 **Informática U5: Inteligencia Artificial**\nMachine learning, redes neuronales, PLN. Tendencias.',
   },
   practica: {
-    1: '🎯 **PP3 — Unidad 1: Introducción Profesionalizante**\n\nRol del profesional en Ciencias de Datos. Ética. Marcos legales (PDPA, GDPR). Mercado de trabajo en IA.',
-    2: '🔄 **PP3 — Unidad 2: Metodologías de Trabajo**\n\nSCRUM y Kanban aplicados a proyectos de datos. Roles. Sprints. Trabajo colaborativo con GitHub.',
-    3: '📊 **PP3 — Unidad 3: Proyecto de Ciencia de Datos**\n\nSelección de datasets. Limpieza con pandas. Análisis exploratorio (EDA). Visualización con matplotlib y seaborn.',
-    4: '🤖 **PP3 — Unidad 4: Aplicación de IA**\n\nModelos ML con scikit-learn. Métricas (accuracy, F1, ROC). Despliegue con Flask o Streamlit.',
-    5: '🎓 **PP3 — Unidad 5: Presentación y Defensa**\n\nDocumentación técnica. README en GitHub. Exposición oral. Portfolio profesional.',
-  }
+    1: '🎯 **PP3 U1: Introducción Profesionalizante**\nRol profesional, ética en datos, marcos legales (GDPR), mercado laboral en IA.',
+    2: '🔄 **PP3 U2: Metodologías de Trabajo**\nSCRUM, Kanban, sprints, backlogs. Trabajo colaborativo con GitHub.',
+    3: '📊 **PP3 U3: Proyecto de Ciencia de Datos**\nDatasets, limpieza con pandas, EDA, visualización con matplotlib/seaborn.',
+    4: '🤖 **PP3 U4: Aplicación de IA**\nModelos ML con scikit-learn. Métricas (accuracy, F1, ROC). Despliegue con Flask/Streamlit.',
+    5: '🎓 **PP3 U5: Presentación y Defensa**\nDocumentación técnica, README en GitHub, exposición oral, portfolio profesional.',
+  },
+  pybd: {
+    1: '🗄️ **PyBD U1: Introducción a BD**\nConcepto BD/SGBD, modelos de datos, tipos de usuarios, DDL/DML, arquitectura.',
+    2: '🔗 **PyBD U2: Diseño Conceptual — Modelo E-R**\nCaracterísticas de datos, entidades, atributos, relaciones, clave primaria, cardinalidad.',
+    3: '📋 **PyBD U3: Modelo Relacional — Modelo Lógico**\nEstructura relacional, reglas de integridad, normalización, vistas, procedimientos almacenados.',
+    4: '💻 **PyBD U4: SQL — Modelo Físico**\nDML/DDL/DCL/TCL. SELECT, INSERT, UPDATE, DELETE. Transacciones y propiedades ACID.',
+    5: '☕ **PyBD U5: Lenguaje Java**\nTipos de datos, POO, clases, objetos, Strings, Arreglos, Colecciones.',
+    6: '🌱 **PyBD U6: Spring Boot y MVC**\nFramework Spring, controladores, RequestMapping, Thymeleaf, Bootstrap.',
+    7: '🐙 **PyBD U7: Git y Maven**\nControl de versiones, integración con IDE, gestión de dependencias, arquetipos.',
+    8: '🔌 **PyBD U8: Clases y Persistencia con JPA**\nInyección de dependencias, JPA/Spring Boot, CrudRepository, JpaRepository, Query Methods.',
+  },
 };
 
-function getUnidades(guildId, channelName) {
-  return UNIDADES[detectarMateria(guildId, channelName)] || UNIDADES.iev;
-}
+function getUnidades(gid, ch) { return UNIDADES[detectarMateria(gid, ch)] || UNIDADES.iev; }
 
-// =============================================
-// HERRAMIENTAS CONTEXTUALES
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// HERRAMIENTAS CONTEXTUALES POR MATERIA
+// ════════════════════════════════════════════════════════════════
 const HERRAMIENTAS = {
-  iev:        '🛠️ **Herramientas IEV:**\n\n📘 Chamilo → aulasvirtuales.name/chamilo\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🌐 Criterio CRAAP → usá /craap [url]\n💬 Discord → Este servidor ✅',
-  bd:         '🛠️ **Herramientas Base de Datos:**\n\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk (SQL online)\n📊 draw.io → diagrams.net (Diagramas E-R)\n🐙 GitHub → github.com',
-  informatica:'🛠️ **Herramientas Informática:**\n\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n📂 Google Drive → drive.google.com\n🎨 Google Slides → slides.google.com\n🐙 GitHub → github.com',
-  pybd:       '🛠️ **Herramientas PyBD — Programación y Base de Datos:**\n\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk (SQL online)\n📊 draw.io → diagrams.net (Diagramas E-R)\n☕ IntelliJ IDEA → jetbrains.com/idea (IDE Java)\n🌱 Spring Initializr → start.spring.io (proyectos Spring Boot)\n🐙 GitHub → github.com\n📦 Maven Repository → mvnrepository.com',
-  practica:   '🛠️ **Herramientas PP3 — Ciencias de Datos:**\n\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐍 Google Colab → colab.research.google.com\n📊 Kaggle → kaggle.com (datasets)\n🤗 HuggingFace → huggingface.co (modelos IA)\n🐙 GitHub → github.com\n📋 Trello → trello.com (Kanban)',
+  iev:        '🛠️ **Herramientas IEV:**\n📘 Chamilo → aulasvirtuales.name/chamilo\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🔍 /craap [url] para evaluar fuentes',
+  bd:         '🛠️ **Herramientas Base de Datos:**\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk\n📊 Diagramas E-R → diagrams.net\n🐙 GitHub → github.com',
+  informatica:'🛠️ **Herramientas Informática:**\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n📂 Google Drive → drive.google.com\n🎨 Google Slides → slides.google.com\n🐙 GitHub → github.com',
+  practica:   '🛠️ **Herramientas PP3 — Ciencias de Datos:**\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐍 Google Colab → colab.research.google.com\n📊 Kaggle → kaggle.com\n🤗 HuggingFace → huggingface.co\n🐙 GitHub → github.com\n📋 Trello → trello.com',
+  pybd:       '🛠️ **Herramientas PyBD — Programación y BD:**\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk\n📊 draw.io → diagrams.net\n☕ IntelliJ IDEA → jetbrains.com/idea\n🌱 Spring Initializr → start.spring.io\n📦 Maven Repo → mvnrepository.com\n🐙 GitHub → github.com',
 };
 
-// =============================================
-// SISTEMA DE PUNTOS
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// SISTEMA DE PUNTOS Y ROLES
+// ════════════════════════════════════════════════════════════════
 function darPuntos(userId, nombre, tipo) {
   if (!puntos.has(userId)) puntos.set(userId, { nombre, pts: 0, entregas: 0, asistencias: 0, preguntas: 0 });
   const p = puntos.get(userId);
   p.nombre = nombre;
-  if (tipo === 'asistencia') { p.pts += 10; p.asistencias++; }
-  if (tipo === 'entrega')    { p.pts += 20; p.entregas++;    }
-  if (tipo === 'pregunta')   { p.pts += 5;  p.preguntas++;   }
+  const delta = { asistencia: 10, entrega: 20, pregunta: 5 }[tipo] || 0;
+  p.pts += delta;
+  if (tipo === 'asistencia') p.asistencias++;
+  if (tipo === 'entrega')    p.entregas++;
+  if (tipo === 'pregunta')   p.preguntas++;
   puntos.set(userId, p);
   guardarDatos();
   return p;
@@ -296,7 +304,7 @@ function darPuntos(userId, nombre, tipo) {
 
 function getRankingCompleto() { return [...puntos.entries()].sort((a, b) => b[1].pts - a[1].pts); }
 function getRanking()          { return getRankingCompleto().slice(0, 10); }
-function getPosicion(userId)   { const pos = getRankingCompleto().findIndex(([id]) => id === userId); return pos === -1 ? '—' : pos + 1; }
+function getPosicion(uid)      { const i = getRankingCompleto().findIndex(([id]) => id === uid); return i === -1 ? '—' : i + 1; }
 function getRol(pts) {
   if (pts >= 200) return { nombre: 'Experto Digital',    emoji: '🏆' };
   if (pts >= 100) return { nombre: 'Colaborador Activo', emoji: '⭐' };
@@ -304,100 +312,88 @@ function getRol(pts) {
   return              { nombre: 'Novato',              emoji: '🌱' };
 }
 
-// =============================================
-// ROLES DISCORD AUTOMÁTICOS
-// =============================================
-const ROLES_PUNTOS = [
+const ROLES_DISCORD = [
   { nombre: 'Experto Digital',    minPts: 200, color: '#FFD700' },
   { nombre: 'Colaborador Activo', minPts: 100, color: '#C0C0C0' },
   { nombre: 'Aprendiz',           minPts: 50,  color: '#4FC3F7' },
   { nombre: 'Novato',             minPts: 0,   color: '#90A4AE' },
 ];
 
-async function actualizarRolDiscord(member, pts) {
+async function actualizarRol(member, pts) {
   try {
-    const guild = member.guild;
-    for (const rolDef of ROLES_PUNTOS) {
-      let rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
-      if (!rol) rol = await guild.roles.create({ name: rolDef.nombre, color: rolDef.color, reason: 'Mentor' });
+    const g = member.guild;
+    for (const rd of ROLES_DISCORD) {
+      if (!g.roles.cache.find(r => r.name === rd.nombre))
+        await g.roles.create({ name: rd.nombre, color: rd.color, reason: 'Mentor' });
     }
-    for (const rolDef of ROLES_PUNTOS) {
-      const rol = guild.roles.cache.find(r => r.name === rolDef.nombre);
-      if (rol && member.roles.cache.has(rol.id)) await member.roles.remove(rol);
+    for (const rd of ROLES_DISCORD) {
+      const r = g.roles.cache.find(r => r.name === rd.nombre);
+      if (r && member.roles.cache.has(r.id)) await member.roles.remove(r);
     }
-    const rolCorrespondiente = ROLES_PUNTOS.find(r => pts >= r.minPts);
-    if (rolCorrespondiente) {
-      const rol = guild.roles.cache.find(r => r.name === rolCorrespondiente.nombre);
-      if (rol) await member.roles.add(rol);
+    const rd = ROLES_DISCORD.find(r => pts >= r.minPts);
+    if (rd) {
+      const r = g.roles.cache.find(r => r.name === rd.nombre);
+      if (r) await member.roles.add(r);
     }
-  } catch (e) { console.error('Error asignando rol:', e); }
+  } catch (e) { LOG.error('Error asignando rol Discord', e); }
 }
 
-// =============================================
-// DETECCIÓN DE SIMILITUD EN ENTREGAS
-// =============================================
-const entregasPorActividad = new Map();
-
-function calcularSimilitud(texto1, texto2) {
-  const palabras = t => new Set(t.toLowerCase().replace(/[^a-záéíóúñ0-9\s]/gi, '').split(/\s+/).filter(p => p.length > 3));
-  const set1 = palabras(texto1), set2 = palabras(texto2);
-  if (!set1.size || !set2.size) return 0;
-  const interseccion = [...set1].filter(p => set2.has(p)).length;
-  return Math.round((interseccion / new Set([...set1, ...set2]).size) * 100);
+// ════════════════════════════════════════════════════════════════
+// DETECCIÓN DE SIMILITUD EN ENTREGAS (anti-plagio)
+// ════════════════════════════════════════════════════════════════
+function similitudJaccard(t1, t2) {
+  const words = t => new Set(t.toLowerCase().replace(/[^a-záéíóúñ0-9\s]/gi,'').split(/\s+/).filter(w => w.length > 3));
+  const s1 = words(t1), s2 = words(t2);
+  if (!s1.size || !s2.size) return 0;
+  const inter = [...s1].filter(w => s2.has(w)).length;
+  return Math.round(inter / new Set([...s1,...s2]).size * 100);
 }
 
-async function verificarPlagioConIA(actividad, n1, c1, n2, c2, simBasica) {
+async function analizarPlagioIA(actividad, n1, c1, n2, c2, sim) {
   try {
-    const resp = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514', max_tokens: 400,
-      messages: [{ role: 'user', content: `Analizá estas dos entregas de "${actividad}" y determiná si hay copia.\nEntrega de ${n1}: ${c1.substring(0, 800)}\nEntrega de ${n2}: ${c2.substring(0, 800)}\nRespondé SOLO en JSON: {"similitud_real":número 0-100,"veredicto":"Copia evidente" o "Muy similar" o "Colaboración" o "Coincidencia","detalle":"1 oración"}` }]
+    const r = await anthropic.messages.create({
+      model: 'claude-sonnet-4-20250514', max_tokens: 350,
+      messages: [{ role: 'user', content:
+        `Analizá si hay copia entre estas entregas de "${actividad}".\n${n1}: ${c1.substring(0,600)}\n${n2}: ${c2.substring(0,600)}\nJSON: {"similitud_real":0-100,"veredicto":"Copia evidente|Muy similar|Colaboración|Coincidencia","detalle":"1 oración"}`
+      }]
     });
-    return JSON.parse(resp.content[0].text.replace(/```json|```/g, '').trim());
-  } catch { return { similitud_real: simBasica, veredicto: 'Muy similar', detalle: 'Análisis por similitud de palabras.' }; }
+    return JSON.parse(r.content[0].text.replace(/```json|```/g,'').trim());
+  } catch { return { similitud_real: sim, veredicto: 'Muy similar', detalle: 'Análisis por palabras clave.' }; }
 }
 
-async function avisarPlagio(guild, actividad, n1, n2, similitud, analisis) {
+async function avisarPlagio(guild, actividad, n1, n2, sim, analisis) {
+  if (!PROFESOR_ID) return;
   try {
-    if (!PROFESOR_ID) return;
-    const profesor = await guild.client.users.fetch(PROFESOR_ID);
-    const nivel = similitud >= 90 ? '🔴 COPIA MUY PROBABLE' : similitud >= 75 ? '🟠 SIMILITUD ALTA' : '🟡 SIMILITUD MODERADA';
-    await profesor.send(`⚠️ **Alerta de similitud**\n\n${nivel}\n📚 **Actividad:** ${actividad}\n👤 **Alumnos:** ${n1} y ${n2}\n📊 **Similitud:** ${similitud}%\n🤖 **Veredicto:** ${analisis.veredicto}\n💬 ${analisis.detalle}`);
-  } catch (e) { console.error('Error DM plagio:', e.message); }
+    const prof  = await guild.client.users.fetch(PROFESOR_ID);
+    const nivel = sim >= 90 ? '🔴 COPIA MUY PROBABLE' : sim >= 75 ? '🟠 SIMILITUD ALTA' : '🟡 SIMILITUD MODERADA';
+    await prof.send(`⚠️ **Alerta anti-plagio**\n\n${nivel}\n📚 **${actividad}**\n👤 ${n1} y ${n2}\n📊 Similitud: ${sim}%\n🤖 ${analisis.veredicto}: ${analisis.detalle}`);
+  } catch (e) { LOG.error('Error enviando alerta plagio', e); }
 }
 
-async function compararEntregas(guild, actividad, nombreNuevo, userIdNuevo, contenidoNuevo) {
-  const clave = actividad.toLowerCase().trim();
-  if (!entregasPorActividad.has(clave)) entregasPorActividad.set(clave, []);
-  const entregas = entregasPorActividad.get(clave);
-  for (const prev of entregas) {
-    if (prev.userId === userIdNuevo) continue;
-    const sim = calcularSimilitud(contenidoNuevo, prev.contenido);
+async function compararEntregas(guild, actividad, nombreNuevo, uidNuevo, contenido) {
+  const key = actividad.toLowerCase().trim();
+  if (!entregasPorActiv.has(key)) entregasPorActiv.set(key, []);
+  const lista = entregasPorActiv.get(key);
+  for (const prev of lista) {
+    if (prev.userId === uidNuevo) continue;
+    const sim = similitudJaccard(contenido, prev.contenido);
     if (sim >= 50) {
-      const analisis = await verificarPlagioConIA(actividad, nombreNuevo, contenidoNuevo, prev.nombre, prev.contenido, sim);
-      if (analisis.similitud_real >= 70) await avisarPlagio(guild, actividad, nombreNuevo, prev.nombre, analisis.similitud_real, analisis);
+      const a = await analizarPlagioIA(actividad, nombreNuevo, contenido, prev.nombre, prev.contenido, sim);
+      if (a.similitud_real >= 70) await avisarPlagio(guild, actividad, nombreNuevo, prev.nombre, a.similitud_real, a);
     }
   }
-  entregas.push({ nombre: nombreNuevo, userId: userIdNuevo, contenido: contenidoNuevo, hora: horaAR() });
+  lista.push({ nombre: nombreNuevo, userId: uidNuevo, contenido, hora: horaAR() });
 }
 
-// =============================================
-// ESTADO EN MEMORIA
-// =============================================
-const quizActivo  = new Map();
-const desafios    = new Map(); let desafioCounter = 1;
-let desafioActivo = null;
-const HORARIOS_CLASE = [{ dia: 2, hora: 8, minuto: 0 }, { dia: 4, hora: 8, minuto: 0 }];
-const HORA_NOTICIAS  = { hora: 8, minuto: 0 };
-
-// =============================================
-// CLIENTE
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// CLIENTE DISCORD Y ANTHROPIC
+// ════════════════════════════════════════════════════════════════
 const client    = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers] });
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// =============================================
+// ════════════════════════════════════════════════════════════════
 // GOOGLE SHEETS
-// =============================================
+// ════════════════════════════════════════════════════════════════
 async function getSheets() {
   const auth = new google.auth.GoogleAuth({ credentials: GOOGLE_CREDENTIALS, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
   return google.sheets({ version: 'v4', auth });
@@ -410,457 +406,455 @@ async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
       spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F', valueInputOption: 'USER_ENTERED',
       resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] }
     });
-  } catch (e) { console.error('Error Sheets asistencia:', e); }
+  } catch (e) { LOG.error('Error guardando asistencia en Sheets', e); }
 }
 
-async function backupPuntosSheets() {
+async function backupPuntos() {
   try {
     const sheets = await getSheets();
     const filas  = [...puntos.entries()].map(([id, p]) => [id, p.nombre, p.pts, p.asistencias, p.entregas, p.preguntas, fechaAR()]);
     await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A:G' });
-    if (filas.length > 0)
+    if (filas.length)
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A1', valueInputOption: 'USER_ENTERED',
-        resource: { values: [['userId', 'Nombre', 'Puntos', 'Asistencias', 'Entregas', 'Preguntas', 'Actualizado'], ...filas] }
+        resource: { values: [['userId','Nombre','Puntos','Asistencias','Entregas','Preguntas','Actualizado'], ...filas] }
       });
-    console.log('✅ Backup puntos Sheets');
-  } catch (e) { console.error('Error backup Sheets:', e); }
+    LOG.info(`Backup Sheets completado: ${filas.length} alumnos`);
+  } catch (e) { LOG.error('Error en backup Sheets', e); }
 }
 
-// =============================================
-// MOODLE
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// MOODLE API
+// ════════════════════════════════════════════════════════════════
 async function moodleAPI(url, token, func, params = {}) {
   try {
-    const qs   = new URLSearchParams({ wstoken: token, wsfunction: func, moodlewsrestformat: 'json', ...params });
-    const resp = await fetch(url + '/webservice/rest/server.php?' + qs.toString());
-    const data = await resp.json();
-    if (data && data.exception) return { _error: data.message };
-    return data;
+    const qs = new URLSearchParams({ wstoken: token, wsfunction: func, moodlewsrestformat: 'json', ...params });
+    const r  = await fetch(`${url}/webservice/rest/server.php?${qs}`);
+    const d  = await r.json();
+    return (d && d.exception) ? { _error: d.message } : d;
   } catch { return null; }
 }
 
-function getMoodleConfig(guildName) {
-  const esIES11 = guildName && guildName.toLowerCase().includes('11');
-  return { url: esIES11 ? MOODLE_URL_IES11 : MOODLE_URL_IES6, token: esIES11 ? MOODLE_TOKEN_IES11 : MOODLE_TOKEN_IES6, nombre: esIES11 ? 'IES N°11' : 'IES N°6' };
+function getMC(guildName) {
+  const es11 = guildName?.toLowerCase().includes('11');
+  return { url: es11 ? MOODLE_URL_IES11 : MOODLE_URL_IES6, token: es11 ? MOODLE_TOKEN_IES11 : MOODLE_TOKEN_IES6, nombre: es11 ? 'IES N°11' : 'IES N°6' };
 }
 
-async function getCursos(url, token)                { return await moodleAPI(url, token, 'core_course_get_courses'); }
-async function getActividades(url, token, courseId) { return await moodleAPI(url, token, 'core_course_get_contents', { courseid: courseId }); }
-async function getUsuarioPorNombre(url, token, nombre) {
-  const data = await moodleAPI(url, token, 'core_user_get_users', { 'criteria[0][key]': 'fullname', 'criteria[0][value]': nombre });
-  return data?.users?.[0] || null;
-}
-async function getNotasUsuario(url, token, userId, courseId) { return await moodleAPI(url, token, 'gradereport_user_get_grade_items', { userid: userId, courseid: courseId }); }
+const getCursos       = (u, t)          => moodleAPI(u, t, 'core_course_get_courses');
+const getActividadesMoodle = (u, t, id) => moodleAPI(u, t, 'core_course_get_contents', { courseid: id });
+const getUserByName   = async (u, t, n) => { const d = await moodleAPI(u, t, 'core_user_get_users', { 'criteria[0][key]': 'fullname', 'criteria[0][value]': n }); return d?.users?.[0] || null; };
+const getNotas        = (u, t, uid, cid)=> moodleAPI(u, t, 'gradereport_user_get_grade_items', { userid: uid, courseid: cid });
 
-// =============================================
+// ════════════════════════════════════════════════════════════════
 // CALENDARIO
-// =============================================
+// ════════════════════════════════════════════════════════════════
 function parseFecha(str) {
   if (!str) return null;
   const p = str.split('/');
   if (p.length !== 3) return null;
-  const d = new Date(parseInt(p[2]), parseInt(p[1]) - 1, parseInt(p[0]));
-  return isNaN(d.getTime()) ? null : d;
+  const d = new Date(+p[2], +p[1]-1, +p[0]);
+  return isNaN(d) ? null : d;
 }
-function diasRestantes(fecha) {
-  const hoy = new Date(); hoy.setHours(0,0,0,0); fecha.setHours(0,0,0,0);
-  return Math.round((fecha - hoy) / 86400000);
+function diasHasta(f) {
+  const h = new Date(); h.setHours(0,0,0,0); f.setHours(0,0,0,0);
+  return Math.round((f-h)/86400000);
 }
-function emojiTipo(tipo) { return { parcial:'📝', entrega:'📤', proyecto:'🎓', clase:'📚', recuperatorio:'🔄' }[tipo] || '📅'; }
-function formatEventos(lista) {
-  if (!lista.length) return 'No hay eventos registrados.';
+const emojiTipo = t => ({ parcial:'📝', entrega:'📤', proyecto:'🎓', clase:'📚', recuperatorio:'🔄' }[t] || '📅');
+function fmtEventos(lista) {
+  if (!lista.length) return 'No hay eventos.';
   return lista.map(([id, ev]) => {
-    const dias   = diasRestantes(parseFecha(ev.fecha));
-    const estado = dias < 0 ? '✅ Pasado' : dias === 0 ? '🔴 HOY' : dias === 1 ? '🟠 Mañana' : dias <= 3 ? `🟡 En ${dias} días` : `🟢 En ${dias} días`;
-    return `${emojiTipo(ev.tipo)} **#${id} — ${ev.titulo}**\n📅 ${ev.fecha} · ${estado}${ev.descripcion ? '\n📋 ' + ev.descripcion : ''}`;
+    const d = diasHasta(parseFecha(ev.fecha));
+    const e = d < 0 ? '✅ Pasado' : d === 0 ? '🔴 HOY' : d === 1 ? '🟠 Mañana' : d <= 3 ? `🟡 En ${d} días` : `🟢 En ${d} días`;
+    return `${emojiTipo(ev.tipo)} **#${id} — ${ev.titulo}**\n📅 ${ev.fecha} · ${e}${ev.descripcion ? '\n📋 ' + ev.descripcion : ''}`;
   }).join('\n\n');
 }
 
-// =============================================
-// NOTICIAS
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// NOTICIAS TECH AUTOMÁTICAS
+// ════════════════════════════════════════════════════════════════
 async function publicarNoticias(guild) {
   const canal = guild.channels.cache.find(c => c.name === CANAL_NOTICIAS);
   if (!canal) return;
   try {
-    const resp = await anthropic.messages.create({
+    const r = await anthropic.messages.create({
       model: 'claude-sonnet-4-20250514', max_tokens: 1000,
-      messages: [{ role: 'user', content: `Generá 3 noticias tecnológicas para estudiantes de Informática en Argentina. Temas: Internet, IA, educación virtual, redes, ciberseguridad.\nFormato:\n**🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa: [explicación]*\n\nSeparalas con una línea. Hoy es ${fechaAR()}.` }]
+      messages: [{ role: 'user', content:
+        `Generá 3 noticias tech para estudiantes de Informática en Argentina. Temas: IA, redes, ciberseguridad, educación virtual.\nFormato:\n**🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa para tu carrera: [explicación]*\n\nSeparalas con una línea. Hoy: ${fechaAR()}.`
+      }]
     });
-    await canal.send(safe(`📰 **NOTICIAS TECH — ${fechaAR()}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${resp.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`, 1990));
-  } catch (e) { console.error('Error noticias:', e); }
+    await canal.send(safe(`📰 **NOTICIAS TECH — ${fechaAR()}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`));
+  } catch (e) { LOG.error('Error publicando noticias', e); }
 }
 
-// =============================================
-// CORRECCIÓN CON CONTEXTO DE MATERIA
-// =============================================
-async function corregirEntrega(texto, guildId, channelName) {
+// ════════════════════════════════════════════════════════════════
+// CORRECCIÓN DE ENTREGAS CON IA (usa contexto de materia correcto)
+// ════════════════════════════════════════════════════════════════
+async function corregirEntrega(texto, gid, ch) {
   if (!texto || texto.length < 20) return null;
-  const ctx  = getContexto(guildId, channelName);
-  const resp = await anthropic.messages.create({
+  const r = await anthropic.messages.create({
     model: 'claude-sonnet-4-20250514', max_tokens: 1200,
-    messages: [{ role: 'user', content: `${ctx}\n\nCorregí este trabajo pedagógicamente:\n\n✅ **Aspectos positivos:**\n[puntos fuertes]\n\n🔧 **Aspectos a mejorar:**\n[lo incompleto]\n\n📊 **Evaluación orientativa:** [Excelente / Muy bueno / Bueno / Regular / Insuficiente]\n\n💡 **Sugerencia:**\n[consejo personalizado]\n\nTRABAJO:\n${texto.substring(0, 3000)}` }]
+    messages: [{ role: 'user', content:
+      `${getContexto(gid, ch)}\n\nCorregí pedagógicamente este trabajo:\n\n✅ **Aspectos positivos:**\n[puntos fuertes]\n\n🔧 **Aspectos a mejorar:**\n[lo incompleto]\n\n📊 **Evaluación orientativa:** [Excelente/Muy bueno/Bueno/Regular/Insuficiente]\n\n💡 **Sugerencia:**\n[consejo personal]\n\nTRABAJO:\n${texto.substring(0, 3000)}`
+    }]
   });
-  return resp.content[0].text;
+  return r.content[0].text;
 }
 
-// =============================================
+// ════════════════════════════════════════════════════════════════
 // INICIAR CLASE
-// =============================================
+// ════════════════════════════════════════════════════════════════
 async function iniciarClase(channel, titulo, guildId) {
-  const sesion = getSesion(guildId);
-  if (sesion.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return; }
-  sesion.activa     = true;
-  sesion.asistentes = new Map();
-  sesion.preguntas  = [];
-  sesion.fecha      = fechaAR();
-  const boton = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('presente').setLabel('✅  Marcar presencia').setStyle(ButtonStyle.Success)
-  );
+  const s = getSesion(guildId);
+  if (s.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return; }
+  s.activa = true; s.asistentes = new Map(); s.preguntas = []; s.fecha = fechaAR();
   await channel.send({
-    content: `📋 **ASISTENCIA — ${titulo || 'Clase de hoy'}**\n📅 Fecha: **${sesion.fecha}** | 🕐 Inicio: **${horaAR()}**\n\nHacé clic para registrar tu presencia.`,
-    components: [boton]
+    content: `📋 **ASISTENCIA — ${titulo || 'Clase de hoy'}**\n📅 **${s.fecha}** | 🕐 **${horaAR()}**\n\nHacé clic para registrar tu presencia.`,
+    components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId('presente').setLabel('✅  Marcar presencia').setStyle(ButtonStyle.Success)
+    )]
   });
 }
 
-// =============================================
-// COMANDOS SLASH
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// DEFINICIÓN DE COMANDOS SLASH
+// ════════════════════════════════════════════════════════════════
 const commands = [
+  // Profesor
   new SlashCommandBuilder().setName('iniciar-clase').setDescription('👨‍🏫 Iniciar toma de asistencia').addStringOption(o => o.setName('titulo').setDescription('Tema de la clase').setRequired(false)),
   new SlashCommandBuilder().setName('cerrar-clase').setDescription('👨‍🏫 Cerrar asistencia y ver resumen'),
-  new SlashCommandBuilder().setName('asistencia').setDescription('Ver asistencia del día'),
   new SlashCommandBuilder().setName('noticias').setDescription('👨‍🏫 Publicar noticias tech ahora'),
-  new SlashCommandBuilder().setName('corregir').setDescription('Corregir un trabajo con IA').addStringOption(o => o.setName('texto').setDescription('Pegá el texto del trabajo').setRequired(true)),
-  new SlashCommandBuilder().setName('unidad').setDescription('Info de una unidad').addIntegerOption(o => o.setName('numero').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
-  new SlashCommandBuilder().setName('preguntar').setDescription('Preguntá a la IA sobre la materia').addStringOption(o => o.setName('pregunta').setDescription('Tu pregunta').setRequired(true)),
-  new SlashCommandBuilder().setName('entrega').setDescription('Ver instrucciones para entregar trabajos'),
-  new SlashCommandBuilder().setName('herramientas').setDescription('Links y herramientas del curso'),
-  new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
-  new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación'),
-  new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y posición actual'),
-  new SlashCommandBuilder().setName('miscursos').setDescription('Ver tus cursos activos en Moodle'),
-  new SlashCommandBuilder().setName('misnota').setDescription('Consultar tus notas en Moodle').addStringOption(o => o.setName('nombre').setDescription('Tu nombre completo en Moodle').setRequired(true)),
-  new SlashCommandBuilder().setName('actividades').setDescription('Ver actividades de un curso').addIntegerOption(o => o.setName('curso').setDescription('ID del curso').setRequired(true)),
-  new SlashCommandBuilder().setName('moodle').setDescription('Ver estado de conexión con Moodle'),
-  new SlashCommandBuilder().setName('evento')
-    .setDescription('👨‍🏫 Agregar evento al calendario')
-    .addStringOption(o => o.setName('titulo').setDescription('Nombre del evento').setRequired(true))
-    .addStringOption(o => o.setName('fecha').setDescription('Fecha (dd/mm/yyyy)').setRequired(true))
+  new SlashCommandBuilder().setName('tarea').setDescription('👨‍🏫 Publicar una nueva tarea')
+    .addStringOption(o => o.setName('titulo').setDescription('Título').setRequired(true))
+    .addStringOption(o => o.setName('descripcion').setDescription('Descripción').setRequired(true))
+    .addStringOption(o => o.setName('fecha').setDescription('Fecha límite dd/mm/yyyy').setRequired(true)),
+  new SlashCommandBuilder().setName('evento').setDescription('👨‍🏫 Agregar evento al calendario')
+    .addStringOption(o => o.setName('titulo').setDescription('Nombre').setRequired(true))
+    .addStringOption(o => o.setName('fecha').setDescription('Fecha dd/mm/yyyy').setRequired(true))
     .addStringOption(o => o.setName('tipo').setDescription('Tipo').setRequired(true).addChoices(
       { name: 'Parcial', value: 'parcial' }, { name: 'Entrega', value: 'entrega' },
       { name: 'Proyecto final', value: 'proyecto' }, { name: 'Clase especial', value: 'clase' },
       { name: 'Recuperatorio', value: 'recuperatorio' }))
     .addStringOption(o => o.setName('descripcion').setDescription('Descripción opcional').setRequired(false)),
-  new SlashCommandBuilder().setName('calendario').setDescription('Ver todos los eventos del cuatrimestre'),
-  new SlashCommandBuilder().setName('proximo').setDescription('Ver el próximo evento importante'),
   new SlashCommandBuilder().setName('borrar-evento').setDescription('👨‍🏫 Borrar un evento').addIntegerOption(o => o.setName('id').setDescription('ID del evento').setRequired(true)),
-  new SlashCommandBuilder().setName('quiz').setDescription('Quiz interactivo (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(7)),
   new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica, practica o pybd').setRequired(true)),
-  new SlashCommandBuilder().setName('solucionar').setDescription('Enviar tu solución al desafio activo').addStringOption(o => o.setName('codigo').setDescription('Tu solución').setRequired(true)),
   new SlashCommandBuilder().setName('soluciones').setDescription('👨‍🏫 Ver soluciones del desafio'),
   new SlashCommandBuilder().setName('cerrar-desafio').setDescription('👨‍🏫 Cerrar desafio y anunciar ganador'),
-  new SlashCommandBuilder().setName('tarea')
-    .setDescription('👨‍🏫 Publicar una nueva tarea')
-    .addStringOption(o => o.setName('titulo').setDescription('Título').setRequired(true))
-    .addStringOption(o => o.setName('descripcion').setDescription('Descripción').setRequired(true))
-    .addStringOption(o => o.setName('fecha').setDescription('Fecha límite ej: 30/05/2026').setRequired(true)),
+  new SlashCommandBuilder().setName('similitudes').setDescription('👨‍🏫 Ver estadísticas de entregas'),
+  new SlashCommandBuilder().setName('backup').setDescription('👨‍🏫 Guardar puntos en Google Sheets'),
+  new SlashCommandBuilder().setName('reporte').setDescription('👨‍🏫 Ver reporte rápido del servidor'),
+  new SlashCommandBuilder().setName('corregir').setDescription('👨‍🏫 Corregir un trabajo con IA').addStringOption(o => o.setName('texto').setDescription('Texto del trabajo').setRequired(true)),
+  // Alumnos
+  new SlashCommandBuilder().setName('asistencia').setDescription('Ver asistencia del día'),
+  new SlashCommandBuilder().setName('preguntar').setDescription('Preguntá a la IA sobre la materia').addStringOption(o => o.setName('pregunta').setDescription('Tu pregunta').setRequired(true)),
+  new SlashCommandBuilder().setName('unidad').setDescription('Ver contenido de una unidad').addIntegerOption(o => o.setName('numero').setDescription('Número de unidad (1-8)').setRequired(true).setMinValue(1).setMaxValue(8)),
+  new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
+  new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación'),
+  new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y posición'),
+  new SlashCommandBuilder().setName('entrega').setDescription('Ver instrucciones para entregar trabajos'),
+  new SlashCommandBuilder().setName('herramientas').setDescription('Links y herramientas del curso'),
   new SlashCommandBuilder().setName('tareas').setDescription('Ver todas las tareas activas'),
   new SlashCommandBuilder().setName('completar').setDescription('Marcar una tarea como completada').addIntegerOption(o => o.setName('id').setDescription('ID de la tarea').setRequired(true)),
-  new SlashCommandBuilder().setName('similitudes').setDescription('👨‍🏫 Ver estadísticas de entregas'),
+  new SlashCommandBuilder().setName('calendario').setDescription('Ver todos los eventos del cuatrimestre'),
+  new SlashCommandBuilder().setName('proximo').setDescription('Ver el próximo evento importante'),
+  new SlashCommandBuilder().setName('quiz').setDescription('Quiz interactivo (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(8)),
+  new SlashCommandBuilder().setName('solucionar').setDescription('Enviar solución al desafio activo').addStringOption(o => o.setName('codigo').setDescription('Tu solución').setRequired(true)),
+  new SlashCommandBuilder().setName('moodle').setDescription('Ver estado de conexión con Moodle'),
+  new SlashCommandBuilder().setName('miscursos').setDescription('Ver tus cursos activos en Moodle'),
+  new SlashCommandBuilder().setName('misnota').setDescription('Consultar tus notas en Moodle').addStringOption(o => o.setName('nombre').setDescription('Tu nombre completo en Moodle').setRequired(true)),
+  new SlashCommandBuilder().setName('actividades').setDescription('Ver actividades de un curso Moodle').addIntegerOption(o => o.setName('curso').setDescription('ID del curso (usá /miscursos)').setRequired(true)),
   new SlashCommandBuilder().setName('materia').setDescription('Ver qué materia detecta el bot en este canal'),
-  new SlashCommandBuilder().setName('backup').setDescription('👨‍🏫 Guardar puntos en Google Sheets'),
   new SlashCommandBuilder().setName('ayuda').setDescription('Ver todos los comandos disponibles'),
-  new SlashCommandBuilder().setName('reporte').setDescription('👨‍🏫 Ver reporte rápido del servidor'),
 ];
 
 async function registrarComandos(guildId) {
-  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands.map(c => c.toJSON()) });
-  console.log(`✅ Comandos registrados en guild ${guildId}`);
+  try {
+    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands.map(c => c.toJSON()) });
+    LOG.info(`Comandos registrados en guild ${guildId}`);
+  } catch (e) { LOG.error(`Error registrando comandos en ${guildId}`, e); }
 }
 
-// =============================================
-// BOT LISTO
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// EVENTO: BOT LISTO
+// ════════════════════════════════════════════════════════════════
 client.once(Events.ClientReady, async (c) => {
-  console.log(`✅ Mentor conectado como ${c.user.tag}`);
-  console.log(`🕐 Hora Argentina: ${ahoraAR()}`);
+  LOG.info(`Mentor conectado como ${c.user.tag}`);
+  LOG.info(`Hora Argentina: ${ahoraAR()}`);
   cargarDatos();
-  for (const guild of c.guilds.cache.values()) await registrarComandos(guild.id);
+  for (const g of c.guilds.cache.values()) await registrarComandos(g.id);
 
+  // Guardar datos forzado cada 5 minutos
   setInterval(guardarDatos, 5 * 60 * 1000);
-  setInterval(limpiarFormulariosExpirados, 5 * 60 * 1000);
-
-  // Backup domingos 22hs
+  // Limpiar formularios expirados cada 5 minutos
+  setInterval(limpiarFormularios, 5 * 60 * 1000);
+  // Backup Sheets domingos 22hs
   setInterval(async () => {
-    const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-    if (ahora.getDay() === 0 && ahora.getHours() === 22 && ahora.getMinutes() === 0)
-      await backupPuntosSheets();
+    const { dia, hora, min } = fechaHoraAR();
+    if (dia === 0 && hora === 22 && min === 0) await backupPuntos();
   }, 60000);
 
+  // Tareas automáticas cada minuto
   setInterval(async () => {
-    const ahora = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
-    const dia = ahora.getDay(), hora = ahora.getHours(), min = ahora.getMinutes();
+    const { dia, hora, min } = fechaHoraAR();
 
+    // Recordatorios Moodle cada hora
     if (min === 0) {
-      for (const guild of client.guilds.cache.values()) {
-        const mc = getMoodleConfig(guild.name);
+      for (const g of client.guilds.cache.values()) {
+        const mc = getMC(g.name);
         if (!mc.token) continue;
-        const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
+        const canal = g.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
         if (!canal) continue;
         const cursos = await getCursos(mc.url, mc.token);
-        if (!cursos || !Array.isArray(cursos)) continue;
-        for (const curso of cursos.filter(c => c.visible === 1 && c.id > 1).slice(0, 3)) {
-          const secciones = await getActividades(mc.url, mc.token, curso.id);
-          if (!secciones || !Array.isArray(secciones)) continue;
-          const haceUnaHora = Date.now() - 3600000;
-          for (const sec of secciones) {
-            for (const mod of (sec.modules || [])) {
-              if (mod.modname === 'assign' && mod.dates) {
-                for (const date of mod.dates) {
-                  if (date.timestamp * 1000 > haceUnaHora && date.dataid === 'duedate')
-                    await canal.send(`📌 **Recordatorio Moodle ${mc.nombre}**\n📚 ${mod.name} — ${curso.shortname}\n📅 Vence: ${new Date(date.timestamp * 1000).toLocaleDateString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' })}`);
-                }
-              }
+        if (!Array.isArray(cursos)) continue;
+        for (const curso of cursos.filter(c => c.visible === 1 && c.id > 1).slice(0,3)) {
+          const secs = await getActividadesMoodle(mc.url, mc.token, curso.id);
+          if (!Array.isArray(secs)) continue;
+          for (const sec of secs) for (const mod of (sec.modules||[])) {
+            if (mod.modname === 'assign' && mod.dates) for (const d of mod.dates) {
+              if (d.timestamp*1000 > Date.now()-3600000 && d.dataid === 'duedate')
+                await canal.send(`📌 **Recordatorio Moodle ${mc.nombre}**\n📚 ${mod.name} — ${curso.shortname}\n📅 Vence: ${new Date(d.timestamp*1000).toLocaleDateString('es-AR',{timeZone:TZ})}`);
             }
           }
         }
       }
     }
 
+    // Recordatorios de calendario
     for (const [, ev] of eventos.entries()) {
-      const fechaEv = parseFecha(ev.fecha);
-      if (!fechaEv) continue;
-      const dias = diasRestantes(fechaEv);
-      const avisar = async (msg) => {
-        for (const guild of client.guilds.cache.values()) {
-          const canal = guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'anuncios');
-          if (canal) await canal.send(msg);
-        }
-      };
-      if (dias === 3 && !ev.avisado3d)  { ev.avisado3d  = true; guardarDatos(); await avisar(`⏰ **Faltan 3 días**\n\n${emojiTipo(ev.tipo)} **${ev.titulo}** — ${ev.fecha}`); }
-      if (dias === 1 && !ev.avisado1d)  { ev.avisado1d  = true; guardarDatos(); await avisar(`🚨 **Mañana** es **${ev.titulo}**`); }
-      if (dias === 0 && !ev.avisadoHoy) { ev.avisadoHoy = true; guardarDatos(); await avisar(`🔴 **HOY — ${ev.titulo}**`); }
+      const fe = parseFecha(ev.fecha); if (!fe) continue;
+      const d  = diasHasta(fe);
+      const av = async (msg) => { for (const g of client.guilds.cache.values()) { const c = g.channels.cache.find(c => c.name==='aviso'||c.name==='anuncios'); if (c) await c.send(msg); } };
+      if (d === 3 && !ev.av3) { ev.av3 = true; guardarDatos(); await av(`⏰ **Faltan 3 días** — ${emojiTipo(ev.tipo)} **${ev.titulo}** — ${ev.fecha}`); }
+      if (d === 1 && !ev.av1) { ev.av1 = true; guardarDatos(); await av(`🚨 **Mañana** — **${ev.titulo}**`); }
+      if (d === 0 && !ev.av0) { ev.av0 = true; guardarDatos(); await av(`🔴 **HOY — ${ev.titulo}**`); }
     }
 
-    for (const h of HORARIOS_CLASE) {
-      if (h.dia === dia && h.hora === hora && min === h.minuto) {
-        for (const guild of client.guilds.cache.values()) {
-          const canal = guild.channels.cache.find(c => c.name === 'dudas');
-          if (canal) await iniciarClase(canal, 'Clase programada', guild.id);
+    // Asistencia automática
+    for (const h of HORARIOS_CLASE)
+      if (h.dia===dia && h.hora===hora && h.min===min)
+        for (const g of client.guilds.cache.values()) {
+          const c = g.channels.cache.find(c => c.name==='dudas');
+          if (c) await iniciarClase(c, 'Clase programada', g.id);
         }
-      }
-    }
 
-    if (hora === HORA_NOTICIAS.hora && min === HORA_NOTICIAS.minuto)
-      for (const guild of client.guilds.cache.values()) await publicarNoticias(guild);
+    // Noticias automáticas 8:00 AM
+    if (hora === 8 && min === 0)
+      for (const g of client.guilds.cache.values()) await publicarNoticias(g);
 
   }, 60000);
 });
 
-// =============================================
-// MENSAJES — FORMULARIO DE ENTREGAS
-// =============================================
-client.on(Events.MessageCreate, async (message) => {
-  if (message.author.bot) return;
+// ════════════════════════════════════════════════════════════════
+// EVENTO: MENSAJES — formulario de entregas y menciones
+// ════════════════════════════════════════════════════════════════
+client.on(Events.MessageCreate, async (msg) => {
+  if (msg.author.bot) return;
 
-  if (message.channel.name.includes('entrega')) {
-    const userId = message.author.id;
-    const nombre = message.member?.displayName || message.author.username;
+  // ── FORMULARIO DE ENTREGAS ──
+  if (msg.channel.name.includes('entrega')) {
+    const uid    = msg.author.id;
+    const nombre = msg.member?.displayName || msg.author.username;
 
-    if (formularioActivo.has(userId)) {
-      const form = formularioActivo.get(userId);
+    if (formularioActivo.has(uid)) {
+      const form = formularioActivo.get(uid);
       if (Date.now() > form.expira) {
-        formularioActivo.delete(userId);
-        await message.reply('⏰ Tu formulario expiró. Escribí cualquier cosa para empezar de nuevo.');
+        formularioActivo.delete(uid);
+        await msg.reply('⏰ Tu formulario expiró (10 min). Escribí cualquier cosa para empezar de nuevo.');
         return;
       }
-      form.expira = Date.now() + FORMULARIO_TIMEOUT;
-      if (form.paso === 1) { form.actividad = message.content; form.paso = 2; formularioActivo.set(userId, form); await message.reply('📎 **Paso 2/3:** Pegá el link o adjuntá el archivo.'); return; }
-      if (form.paso === 2) { form.link = message.content || (message.attachments.first()?.url || 'Sin link'); form.paso = 3; formularioActivo.set(userId, form); await message.reply('💬 **Paso 3/3:** ¿Algún comentario? (o escribí "listo")'); return; }
+      form.expira = Date.now() + FORMULARIO_MS;
+      if (form.paso === 1) { form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form); await msg.reply('📎 **Paso 2/3:** Pegá el link de tu trabajo o adjuntá el archivo.'); return; }
+      if (form.paso === 2) { form.link = msg.content || (msg.attachments.first()?.url||'Sin link'); form.paso = 3; formularioActivo.set(uid, form); await msg.reply('💬 **Paso 3/3:** ¿Algún comentario? (o escribí "listo")'); return; }
       if (form.paso === 3) {
-        form.comentario = message.content === 'listo' ? '' : message.content;
-        formularioActivo.delete(userId);
-        await message.channel.send(`📋 **ENTREGA REGISTRADA**\n👤 **${form.nombre}**\n📚 ${form.actividad}\n🔗 ${form.link}\n💬 ${form.comentario || 'Sin comentario'}`);
-        compararEntregas(message.guild, form.actividad, nombre, userId, `${form.actividad} ${form.link} ${form.comentario}`).catch(console.error);
-        const p = darPuntos(userId, nombre, 'entrega');
-        await actualizarRolDiscord(message.member, p.pts);
+        form.comentario = msg.content === 'listo' ? '' : msg.content;
+        formularioActivo.delete(uid);
+        await msg.channel.send(`📋 **ENTREGA REGISTRADA**\n👤 **${form.nombre}**\n📚 ${form.actividad}\n🔗 ${form.link}\n💬 ${form.comentario||'Sin comentario'}`);
+        compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.link} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
+        const p = darPuntos(uid, nombre, 'entrega');
+        await actualizarRol(msg.member, p.pts);
         try {
-          await message.channel.sendTyping();
-          const correccion = await corregirEntrega(`Actividad: ${form.actividad}. Link: ${form.link}. Comentario: ${form.comentario}`, message.guildId, message.channel?.name);
-          if (correccion) await message.reply(safe(`🤖 **Corrección automática:**\n\n${correccion}\n\n*⚠️ Orientativa.*\n\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`));
-        } catch (e) { console.error('Error corrección:', e); }
+          await msg.channel.sendTyping();
+          const cor = await corregirEntrega(`Actividad: ${form.actividad}. Link: ${form.link}. Comentario: ${form.comentario}`, msg.guildId, msg.channel?.name);
+          if (cor) await msg.reply(safe(`🤖 **Corrección automática:**\n\n${cor}\n\n*⚠️ Orientativa. La nota final la define el profesor.*\n\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`));
+        } catch (e) { LOG.error('Error en corrección', e); }
         return;
       }
     }
-
-    if (!formularioActivo.has(userId) && message.content.length > 2) {
-      formularioActivo.set(userId, { paso: 1, nombre, actividad: '', link: '', comentario: '', expira: Date.now() + FORMULARIO_TIMEOUT });
-      await message.reply(`📝 **Formulario de entrega**\n\nHola **${nombre}**!\n\n**Paso 1/3:** ¿Cuál es el nombre de la actividad?\n\n_⏰ Tenés 10 minutos para completarlo._`);
+    if (!formularioActivo.has(uid) && msg.content.length > 2) {
+      formularioActivo.set(uid, { paso: 1, nombre, actividad: '', link: '', comentario: '', expira: Date.now() + FORMULARIO_MS });
+      await msg.reply(`📝 **Formulario de entrega**\n\nHola **${nombre}**!\n\n**Paso 1/3:** ¿Cuál es el nombre de la actividad?\n\n_⏰ Tenés 10 minutos para completarlo._`);
     }
   }
 
-  if (message.mentions.has(client.user)) {
-    const pregunta = message.content.replace(/<@\d+>/g, '').trim();
+  // ── MENCIÓN AL BOT ──
+  if (msg.mentions.has(client.user)) {
+    const pregunta = msg.content.replace(/<@\d+>/g,'').trim();
     if (!pregunta) return;
     try {
-      await message.channel.sendTyping();
-      const ctx  = getContexto(message.guildId, message.channel?.name);
-      const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${ctx}\n\nPregunta: ${pregunta}` }] });
-      await message.reply(safe(`🤖 ${resp.content[0].text}`));
-      const sesion = getSesion(message.guildId);
-      if (sesion.activa) sesion.preguntas.push({ pregunta: pregunta.substring(0, 100), autor: message.member?.displayName || message.author.username });
-    } catch (e) { await message.reply('❌ No pude procesar tu pregunta.'); }
+      await msg.channel.sendTyping();
+      const r = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${getContexto(msg.guildId, msg.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+      await msg.reply(safe(`🤖 ${r.content[0].text}`));
+      const s = getSesion(msg.guildId);
+      if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: msg.member?.displayName||msg.author.username });
+    } catch (e) { LOG.error('Error en mención', e); await msg.reply('❌ Error al procesar tu pregunta. Intentá de nuevo.'); }
   }
 });
 
-// =============================================
-// INTERACCIONES
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// EVENTO: INTERACCIONES (botones y comandos slash)
+// ════════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
 
+  // ── BOTÓN: Quiz ──
   if (interaction.isButton() && interaction.customId.startsWith('quiz_')) {
-    const [, respuesta, targetUserId] = interaction.customId.split('_');
-    const userId = interaction.user.id;
-    if (userId !== targetUserId) { await interaction.reply({ content: '⚠️ Este quiz es de otro alumno.', ephemeral: true }); return; }
-    const quiz = quizActivo.get(userId);
-    if (!quiz)           { await interaction.reply({ content: '⚠️ Usá /quiz para empezar.', ephemeral: true }); return; }
-    if (quiz.respondido) { await interaction.reply({ content: '✅ Ya respondiste. Usá /quiz para otra pregunta.', ephemeral: true }); return; }
-    quiz.respondido = true; quizActivo.set(userId, quiz);
-    const nombre     = interaction.member?.displayName || interaction.user.username;
-    const esCorrecta = respuesta === quiz.correcta;
+    const [, resp, tuid] = interaction.customId.split('_');
+    const uid = interaction.user.id;
+    if (uid !== tuid)  { await interaction.reply({ content: '⚠️ Este quiz no es tuyo. Usá /quiz para el tuyo.', ephemeral: true }); return; }
+    const quiz = quizActivo.get(uid);
+    if (!quiz)          { await interaction.reply({ content: '⚠️ Usá /quiz para empezar.', ephemeral: true }); return; }
+    if (quiz.respondido){ await interaction.reply({ content: '✅ Ya respondiste. Usá /quiz para otra pregunta.', ephemeral: true }); return; }
+    quiz.respondido = true; quizActivo.set(uid, quiz);
+    const nombre = interaction.member?.displayName || interaction.user.username;
     let msg;
-    if (esCorrecta) {
-      const p = darPuntos(userId, nombre, 'pregunta'); darPuntos(userId, nombre, 'pregunta'); const p3 = darPuntos(userId, nombre, 'pregunta');
-      await actualizarRolDiscord(interaction.member, p3.pts);
+    if (resp === quiz.correcta) {
+      const p = darPuntos(uid, nombre, 'pregunta'); darPuntos(uid, nombre, 'pregunta'); const p3 = darPuntos(uid, nombre, 'pregunta');
+      await actualizarRol(interaction.member, p3.pts);
       msg = `✅ **¡Correcto ${nombre}!** ${quiz.explicacion}\n\n+15 pts | Total: **${p3.pts} pts**`;
     } else {
-      msg = `❌ **Incorrecto ${nombre}.** Correcta: ${quiz.correcta}\n${quiz.explicacion}`;
+      msg = `❌ **Incorrecto ${nombre}.** La correcta era: ${quiz.correcta}\n${quiz.explicacion}`;
     }
     await interaction.update({ content: safe(msg), components: [] });
     return;
   }
 
+  // ── BOTÓN: Completar tarea ──
   if (interaction.isButton() && interaction.customId.startsWith('completar_')) {
-    const id     = parseInt(interaction.customId.split('_')[1]);
-    const tarea  = tareas.get(id);
+    const id    = parseInt(interaction.customId.split('_')[1]);
+    const tarea = tareas.get(id);
     if (!tarea) { await interaction.reply({ content: '❌ Tarea no encontrada.', ephemeral: true }); return; }
-    const userId = interaction.user.id;
+    const uid    = interaction.user.id;
     const nombre = interaction.member?.displayName || interaction.user.username;
-    if (tarea.completados.has(userId)) { await interaction.reply({ content: `✅ **${nombre}**, ya marcaste esta tarea.`, ephemeral: true }); return; }
-    tarea.completados.add(userId); guardarDatos();
-    const p = darPuntos(userId, nombre, 'entrega');
-    await actualizarRolDiscord(interaction.member, p.pts);
+    if (tarea.completados.has(uid)) { await interaction.reply({ content: `✅ **${nombre}**, ya marcaste esta tarea.`, ephemeral: true }); return; }
+    tarea.completados.add(uid); guardarDatos();
+    const p = darPuntos(uid, nombre, 'entrega');
+    await actualizarRol(interaction.member, p.pts);
     await interaction.reply({ content: `✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}` });
     return;
   }
 
+  // ── BOTÓN: Ver completados ──
   if (interaction.isButton() && interaction.customId.startsWith('vercompletados_')) {
     const id    = parseInt(interaction.customId.split('_')[1]);
     const tarea = tareas.get(id);
     if (!tarea) { await interaction.reply({ content: '❌ Tarea no encontrada.', ephemeral: true }); return; }
-    const nombres = [...tarea.completados].map(uid => { const p = puntos.get(uid); return p ? p.nombre : uid; });
-    await interaction.reply({ content: `👥 **Completaron "${tarea.titulo}"** (${tarea.completados.size}):\n\n${nombres.map((n, i) => `${i + 1}. ${n}`).join('\n') || 'Nadie todavía.'}`, ephemeral: true });
+    const lista = [...tarea.completados].map(uid => puntos.get(uid)?.nombre || uid).map((n, i) => `${i+1}. ${n}`).join('\n') || 'Nadie completó esta tarea todavía.';
+    await interaction.reply({ content: `👥 **Completaron "${tarea.titulo}"** (${tarea.completados.size}):\n\n${lista}`, ephemeral: true });
     return;
   }
 
+  // ── BOTÓN: Presente ──
   if (interaction.isButton() && interaction.customId === 'presente') {
     const sesion = getSesion(interaction.guildId);
     if (!sesion.activa) { await interaction.reply({ content: '⚠️ La clase ya cerró.', ephemeral: true }); return; }
-    const userId = interaction.user.id;
+    const uid    = interaction.user.id;
     const nombre = interaction.member?.displayName || interaction.user.username;
-    if (sesion.asistentes.has(userId)) { await interaction.reply({ content: `✅ **${nombre}**, ya registraste tu presencia.`, ephemeral: true }); return; }
+    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: `✅ **${nombre}**, ya registraste tu presencia.`, ephemeral: true }); return; }
     const hora = horaAR();
-    sesion.asistentes.set(userId, { nombre, hora });
-    const materiaAsist = detectarMateria(interaction.guildId, interaction.channel?.name);
-    await guardarAsistencia(nombre, sesion.fecha, hora, materiaAsist, interaction.guild?.name || '');
-    const p = darPuntos(userId, nombre, 'asistencia');
-    await actualizarRolDiscord(interaction.member, p.pts);
-    await interaction.reply({ content: `✅ **${nombre}** — presencia a las **${hora}**\n${getRol(p.pts).emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${getRol(p.pts).nombre}**` });
+    sesion.asistentes.set(uid, { nombre, hora });
+    const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+    await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+    const p   = darPuntos(uid, nombre, 'asistencia');
+    const rol = getRol(p.pts);
+    await actualizarRol(interaction.member, p.pts);
+    await interaction.reply({ content: `✅ **${nombre}** — presencia a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` });
     return;
   }
 
+  // ── COMANDOS SLASH ──
   if (!interaction.isChatInputCommand()) return;
-  await interaction.deferReply();
 
-  if (SOLO_PROFESOR.includes(interaction.commandName) && !esProfesor(interaction.user.id)) {
+  // deferReply SIEMPRE — evita "Unknown Interaction" por timeout
+  try { await interaction.deferReply(); }
+  catch (e) { LOG.error(`Error en deferReply para /${interaction.commandName}`, e); return; }
+
+  // Verificar permisos de profesor
+  if (SOLO_PROFESOR.has(interaction.commandName) && !esProfesor(interaction.user.id)) {
     await interaction.editReply('❌ Este comando es solo para el profesor.'); return;
   }
+
+  LOG.cmd(`${interaction.user.username} usó /${interaction.commandName} en ${interaction.guild?.name}`);
 
   try {
     switch (interaction.commandName) {
 
+      // ── DIAGNÓSTICO ──
       case 'materia': {
-        const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const nombres = { iev: 'Internet y Entornos Virtuales (IEV)', bd: 'Base de Datos', informatica: 'Informática', practica: 'Práctica Profesionalizante III', pybd: 'Programación y Base de Datos (PyBD)' };
-        await interaction.editReply(`🔍 **Detección de materia**\n\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia detectada: **${nombres[materia]}**\n\nPalabras clave por canal:\n• PP3 → \`practica\`, \`pract\`, \`pp3\`\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
+        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const NOM = { iev:'Internet y Entornos Virtuales (IEV)', bd:'Base de Datos', informatica:'Informática', practica:'Práctica Profesionalizante III', pybd:'Programación y Base de Datos (PyBD)' };
+        await interaction.editReply(`🔍 **Detección de materia**\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia: **${NOM[mat]}**\n\nPalabras clave:\n• PyBD → \`pybd\`, \`progbd\`, \`prog-bd\`\n• PP3 → \`practica\`, \`pract\`, \`pp3\`\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
         break;
       }
 
       case 'ayuda': {
-        const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const nombres = { iev: '📡 IEV', bd: '🗄️ Base de Datos', informatica: '💻 Informática', practica: '🎯 PP3', pybd: '☕ PyBD' };
-        await interaction.editReply(
-          `📖 **Comandos disponibles** · ${nombres[materia]}\n\n` +
-          `**Consultas:**\n• \`/preguntar\` — preguntá a la IA\n• \`/unidad [1-7]\` — ver contenido de una unidad\n• \`/craap [url]\` — evaluar una fuente\n\n` +
-          `**Entregas:**\n• Canal **#entregas** — formulario guiado\n• \`/tareas\` — ver tareas activas\n• \`/completar [id]\` — marcar completada\n\n` +
-          `**Puntos:**\n• \`/mispuntos\` — tus puntos y posición\n• \`/ranking\` — top 10\n• \`/quiz [unidad]\` — +15 pts\n• \`/solucionar\` — +25 pts\n\n` +
-          `**Moodle:**\n• \`/miscursos\` — cursos activos\n• \`/misnota [nombre]\` — tus notas\n\n` +
-          `**Otros:**\n• \`/calendario\` — eventos del cuatrimestre\n• \`/herramientas\` — links útiles\n• \`/materia\` — materia detectada`
-        );
+        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const NOM = { iev:'📡 IEV', bd:'🗄️ BD', informatica:'💻 Informática', practica:'🎯 PP3', pybd:'☕ PyBD' };
+        await interaction.editReply(safe(
+          `📖 **Comandos — ${NOM[mat]}**\n\n` +
+          `**Consultas:** /preguntar · /unidad [1-8] · /craap [url]\n` +
+          `**Entregas:** #entregas (formulario) · /tareas · /completar [id]\n` +
+          `**Puntos:** /mispuntos · /ranking · /quiz [unidad] · /solucionar\n` +
+          `**Moodle:** /miscursos · /misnota [nombre] · /actividades [id]\n` +
+          `**Eventos:** /calendario · /proximo\n` +
+          `**Otros:** /herramientas · /materia · /ayuda`
+        ));
         break;
       }
 
       case 'reporte': {
-        const sesion       = getSesion(interaction.guildId);
-        const totalAlumnos = puntos.size;
-        const ranking      = getRankingCompleto();
-        const promPts      = totalAlumnos > 0 ? Math.round(ranking.reduce((s, [, p]) => s + p.pts, 0) / totalAlumnos) : 0;
-        const topAlumno    = ranking[0]?.[1];
-        await interaction.editReply(
+        const s    = getSesion(interaction.guildId);
+        const rank = getRankingCompleto();
+        const prom = rank.length ? Math.round(rank.reduce((a,[,p]) => a+p.pts, 0)/rank.length) : 0;
+        await interaction.editReply(safe(
           `📊 **Reporte — ${interaction.guild?.name}**\n📅 ${ahoraAR()}\n\n` +
-          `👥 **Alumnos registrados:** ${totalAlumnos}\n📈 **Puntos promedio:** ${promPts} pts\n🏆 **Líder:** ${topAlumno ? `${topAlumno.nombre} (${topAlumno.pts} pts)` : '—'}\n\n` +
-          `🎓 **Clase del día:** ${sesion.activa ? `🟢 Activa — ${sesion.asistentes.size} presentes` : '⚪ Sin clase activa'}\n` +
-          `📚 **Tareas activas:** ${tareas.size}\n📅 **Eventos próximos:** ${[...eventos.values()].filter(ev => { const f = parseFecha(ev.fecha); return f && diasRestantes(f) >= 0; }).length}\n` +
-          `🔍 **Actividades con entregas:** ${entregasPorActividad.size}`
-        );
+          `👥 Alumnos: ${puntos.size} | 📈 Promedio: ${prom} pts | 🏆 Líder: ${rank[0]?.[1]?.nombre||'—'} (${rank[0]?.[1]?.pts||0} pts)\n` +
+          `🎓 Clase: ${s.activa ? `🟢 Activa — ${s.asistentes.size} presentes` : '⚪ Inactiva'}\n` +
+          `📚 Tareas activas: ${tareas.size} | 📅 Eventos próximos: ${[...eventos.values()].filter(ev=>{const f=parseFecha(ev.fecha);return f&&diasHasta(f)>=0;}).length}\n` +
+          `🔍 Actividades con entregas: ${entregasPorActiv.size}`
+        ));
         break;
       }
 
-      case 'iniciar-clase': {
-        await iniciarClase(interaction.channel, interaction.options.getString('titulo') || 'Clase de hoy', interaction.guildId);
+      case 'iniciar-clase':
+        await iniciarClase(interaction.channel, interaction.options.getString('titulo')||'Clase de hoy', interaction.guildId);
         await interaction.editReply('✅ Clase iniciada.');
         break;
-      }
 
       case 'cerrar-clase': {
-        const sesion = getSesion(interaction.guildId);
-        if (!sesion.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
-        sesion.activa = false;
-        const lista   = [...sesion.asistentes.values()];
-        const resumen = lista.length > 0 ? lista.map((a, i) => `${i + 1}. **${a.nombre}** — ${a.hora}`).join('\n') : 'Ningún alumno registró presencia.';
-        await interaction.editReply(safe(`📋 **Clase cerrada — ${sesion.fecha}**\n👥 Total: **${lista.length} presentes**\n\n${resumen}\n\n📊 Guardado en Google Sheets.`));
+        const s = getSesion(interaction.guildId);
+        if (!s.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
+        s.activa = false;
+        const lista   = [...s.asistentes.values()];
+        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}`).join('\n') : 'Sin presentes.';
+        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes**\n\n${resumen}\n\n📊 Guardado en Google Sheets.`));
         break;
       }
 
       case 'asistencia': {
-        const sesion = getSesion(interaction.guildId);
-        if (!sesion.asistentes.size) { await interaction.editReply('No hay asistencia registrada hoy.'); break; }
-        const lista = [...sesion.asistentes.values()];
-        await interaction.editReply(safe(`📋 **Asistencia ${sesion.fecha}** — ${lista.length} presentes\n\n${lista.map((a, i) => `${i + 1}. **${a.nombre}** — ${a.hora}`).join('\n')}`));
+        const s = getSesion(interaction.guildId);
+        if (!s.asistentes.size) { await interaction.editReply('No hay asistencia registrada hoy.'); break; }
+        const lista = [...s.asistentes.values()];
+        await interaction.editReply(safe(`📋 **Asistencia ${s.fecha}** — ${lista.length} presentes\n\n${lista.map((a,i)=>`${i+1}. **${a.nombre}** — ${a.hora}`).join('\n')}`));
         break;
       }
 
       case 'noticias':
         await interaction.editReply('📰 Generando noticias...');
-        publicarNoticias(interaction.guild).then(() => interaction.editReply('📰 ¡Publicadas en #noticias-tech!')).catch(() => interaction.editReply('❌ Error.'));
+        publicarNoticias(interaction.guild).then(()=>interaction.editReply('📰 ¡Publicadas en #noticias-tech!')).catch(()=>interaction.editReply('❌ Error.'));
         break;
 
       case 'corregir': {
-        const correccion = await corregirEntrega(interaction.options.getString('texto'), interaction.guildId, interaction.channel?.name);
-        await interaction.editReply(safe(`🤖 **Corrección:**\n\n${correccion}\n\n*⚠️ Orientativa.*`));
+        const c = await corregirEntrega(interaction.options.getString('texto'), interaction.guildId, interaction.channel?.name);
+        await interaction.editReply(safe(`🤖 **Corrección:**\n\n${c}\n\n*⚠️ Orientativa.*`));
         break;
       }
 
@@ -872,145 +866,140 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       case 'preguntar': {
-        const userId = interaction.user.id;
-        const espera = verificarCooldown(userId);
-        if (espera > 0) { await interaction.editReply(`⏳ Esperá ${espera} segundos antes de hacer otra pregunta.`); break; }
+        const uid    = interaction.user.id;
+        const espera = checkCooldown(uid);
+        if (espera > 0) { await interaction.editReply(`⏳ Esperá ${espera} segundos antes de otra pregunta.`); break; }
         const pregunta = interaction.options.getString('pregunta');
-        const ctx      = getContexto(interaction.guildId, interaction.channel?.name);
-        const resp     = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${ctx}\n\nPregunta: ${pregunta}` }] });
+        const r        = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nPregunta: ${pregunta}` }] });
         const nombre   = interaction.member?.displayName || interaction.user.username;
-        darPuntos(userId, nombre, 'pregunta');
-        const sesion = getSesion(interaction.guildId);
-        if (sesion.activa) sesion.preguntas.push({ pregunta: pregunta.substring(0, 100), autor: nombre });
-        await interaction.editReply(safe(`🤖 **Respuesta:**\n\n${resp.content[0].text}\n\n💡 +5 pts`));
+        darPuntos(uid, nombre, 'pregunta');
+        const s = getSesion(interaction.guildId);
+        if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: nombre });
+        await interaction.editReply(safe(`🤖 **Respuesta:**\n\n${r.content[0].text}\n\n💡 +5 pts`));
         break;
       }
 
       case 'ranking': {
         const top = getRanking();
-        if (!top.length) { await interaction.editReply('No hay puntos registrados todavía.'); break; }
-        const medallas = ['🥇','🥈','🥉','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
-        await interaction.editReply(`🏆 **Ranking 2026**\n\n${top.map(([, p], i) => `${medallas[i]} **${p.nombre}** — ${p.pts} pts ${getRol(p.pts).emoji}`).join('\n')}\n\n💡 Asistencia +10 | Entrega +20 | Pregunta +5`);
+        if (!top.length) { await interaction.editReply('No hay puntos todavía.'); break; }
+        const M = ['🥇','🥈','🥉','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
+        await interaction.editReply(`🏆 **Ranking 2026**\n\n${top.map(([,p],i)=>`${M[i]} **${p.nombre}** — ${p.pts} pts ${getRol(p.pts).emoji}`).join('\n')}\n\n💡 Asistencia +10 | Entrega +20 | Pregunta +5`);
         break;
       }
 
       case 'mispuntos': {
-        const userId = interaction.user.id;
+        const uid    = interaction.user.id;
         const nombre = interaction.member?.displayName || interaction.user.username;
-        if (!puntos.has(userId)) { await interaction.editReply('Todavía no tenés puntos. ¡Participá en clase!'); break; }
-        const p     = puntos.get(userId);
-        const rol   = getRol(p.pts);
-        const pos   = getPosicion(userId);
-        const total = getRankingCompleto().length;
-        const prox  = p.pts >= 200 ? '' : p.pts >= 100 ? ` · Faltan ${200 - p.pts} pts para Experto Digital 🏆` : p.pts >= 50 ? ` · Faltan ${100 - p.pts} pts para Colaborador Activo ⭐` : ` · Faltan ${50 - p.pts} pts para Aprendiz 📚`;
-        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${total} alumnos\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias * 10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas * 20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas * 5} pts)`);
+        if (!puntos.has(uid)) { await interaction.editReply('Todavía no tenés puntos. ¡Participá en clase!'); break; }
+        const p    = puntos.get(uid);
+        const rol  = getRol(p.pts);
+        const pos  = getPosicion(uid);
+        const tot  = getRankingCompleto().length;
+        const prox = p.pts >= 200 ? '' : p.pts >= 100 ? ` · Faltan ${200-p.pts} pts para Experto Digital 🏆` : p.pts >= 50 ? ` · Faltan ${100-p.pts} pts para Colaborador ⭐` : ` · Faltan ${50-p.pts} pts para Aprendiz 📚`;
+        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot}\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)`);
         break;
       }
 
       case 'entrega':
-        await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá al canal **#entregas** (o #entregas-bd, #entregas-practica, etc.)\n2. Escribí cualquier cosa para iniciar el formulario\n3. Seguí los 3 pasos\n4. La IA corrige automáticamente\n5. El profesor confirma la nota final\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
+        await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá al canal **#entregas** (o #entregas-bd, #entregas-practica, etc.)\n2. Escribí cualquier cosa para iniciar el formulario\n3. Seguí los 3 pasos\n4. La IA corrige automáticamente\n5. El profesor confirma la nota\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
         break;
 
-      case 'herramientas': {
-        const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        await interaction.editReply(HERRAMIENTAS[materia] || HERRAMIENTAS.iev);
+      case 'herramientas':
+        await interaction.editReply(HERRAMIENTAS[detectarMateria(interaction.guildId, interaction.channel?.name)] || HERRAMIENTAS.iev);
         break;
-      }
 
       case 'craap': {
-        const url  = interaction.options.getString('url');
-        const ctx  = getContexto(interaction.guildId, interaction.channel?.name);
-        const resp = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${ctx}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá del 1 al 5 y dá conclusión final.` }] });
-        await interaction.editReply(safe(`🔍 **CRAAP: \`${url}\`**\n\n${resp.content[0].text}`));
+        const url = interaction.options.getString('url');
+        const r   = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá 1-5 cada dimensión y dá conclusión final.` }] });
+        await interaction.editReply(safe(`🔍 **CRAAP: \`${url}\`**\n\n${r.content[0].text}`));
         break;
       }
 
       case 'moodle': {
-        const mc = getMoodleConfig(interaction.guild?.name);
+        const mc = getMC(interaction.guild?.name);
         if (!mc.token) { await interaction.editReply(`❌ Token no configurado para ${mc.nombre}`); break; }
-        const cursos = await getCursos(mc.url, mc.token);
-        if (!cursos)       { await interaction.editReply(`❌ Error de conexión con ${mc.url}`); break; }
-        if (cursos._error) { await interaction.editReply(`❌ Error Moodle: ${cursos._error}`); break; }
-        await interaction.editReply(`✅ Moodle **${mc.nombre}** conectado. Cursos: **${Array.isArray(cursos) ? cursos.length : 0}**`);
+        const c = await getCursos(mc.url, mc.token);
+        if (!c)        { await interaction.editReply(`❌ Sin conexión con ${mc.url}`); break; }
+        if (c._error)  { await interaction.editReply(`❌ Error Moodle: ${c._error}`); break; }
+        await interaction.editReply(`✅ Moodle **${mc.nombre}** conectado — ${Array.isArray(c)?c.length:0} cursos`);
         break;
       }
 
       case 'miscursos': {
-        const mc     = getMoodleConfig(interaction.guild?.name);
-        const cursos = await getCursos(mc.url, mc.token);
-        if (!cursos || !Array.isArray(cursos)) { await interaction.editReply('❌ No se pudo obtener los cursos.'); break; }
-        const activos = cursos.filter(c => c.visible === 1 && c.id > 1);
-        if (!activos.length) { await interaction.editReply('No hay cursos activos.'); break; }
-        await interaction.editReply(`📚 **Cursos Moodle ${mc.nombre}:**\n\n${activos.slice(0, 15).map(c => `#${c.id} — ${c.fullname}`).join('\n')}\n\nUsá /actividades curso:[id]`);
+        const mc = getMC(interaction.guild?.name);
+        const c  = await getCursos(mc.url, mc.token);
+        if (!Array.isArray(c)) { await interaction.editReply('❌ No se pudo obtener los cursos.'); break; }
+        const act = c.filter(x => x.visible===1 && x.id>1);
+        if (!act.length) { await interaction.editReply('No hay cursos activos.'); break; }
+        await interaction.editReply(`📚 **Cursos Moodle ${mc.nombre}:**\n\n${act.slice(0,15).map(x=>`#${x.id} — ${x.fullname}`).join('\n')}\n\nUsá /actividades curso:[id]`);
         break;
       }
 
       case 'actividades': {
-        const mc        = getMoodleConfig(interaction.guild?.name);
-        const courseId  = interaction.options.getInteger('curso');
-        const secciones = await getActividades(mc.url, mc.token, courseId);
-        if (!secciones || !Array.isArray(secciones)) { await interaction.editReply('❌ No se pudo obtener las actividades.'); break; }
-        let msg = `📋 **Actividades #${courseId}:**\n`; let total = 0;
-        for (const sec of secciones.slice(0, 5)) {
-          if (!sec.modules?.length) continue;
-          msg += `\n**${sec.name}:**\n`;
-          for (const mod of sec.modules.slice(0, 5)) { msg += `  • ${mod.name} (${mod.modname})\n`; total++; }
+        const mc   = getMC(interaction.guild?.name);
+        const cid  = interaction.options.getInteger('curso');
+        const secs = await getActividadesMoodle(mc.url, mc.token, cid);
+        if (!Array.isArray(secs)) { await interaction.editReply('❌ No se pudo obtener las actividades.'); break; }
+        let msg = `📋 **Actividades #${cid}:**\n`; let tot = 0;
+        for (const s of secs.slice(0,5)) {
+          if (!s.modules?.length) continue;
+          msg += `\n**${s.name}:**\n`;
+          for (const m of s.modules.slice(0,5)) { msg += `  • ${m.name} (${m.modname})\n`; tot++; }
         }
-        await interaction.editReply(total === 0 ? 'No hay actividades.' : safe(msg));
+        await interaction.editReply(tot ? safe(msg) : 'No hay actividades.');
         break;
       }
 
       case 'misnota': {
-        const mc      = getMoodleConfig(interaction.guild?.name);
-        const nbuscar = interaction.options.getString('nombre');
-        const usuario = await getUsuarioPorNombre(mc.url, mc.token, nbuscar);
-        if (!usuario) { await interaction.editReply(`❌ No encontré **${nbuscar}** en Moodle ${mc.nombre}.`); break; }
-        const cursos = await getCursos(mc.url, mc.token);
-        if (!cursos || !Array.isArray(cursos)) { await interaction.editReply('No se pudo obtener los cursos.'); break; }
-        let msg = `📊 **Notas de ${usuario.fullname}:**\n`;
-        for (const curso of cursos.filter(c => c.visible === 1 && c.id > 1).slice(0, 3)) {
-          const notas = await getNotasUsuario(mc.url, mc.token, usuario.id, curso.id);
-          if (!notas?.usergrades?.length) continue;
-          msg += `\n**${curso.shortname}:**\n`;
-          for (const item of (notas.usergrades[0]?.gradeitems || []).slice(0, 5))
-            msg += `  • ${item.itemname}: **${item.gradeformatted || 'Sin calificar'}**\n`;
+        const mc  = getMC(interaction.guild?.name);
+        const nb  = interaction.options.getString('nombre');
+        const usr = await getUserByName(mc.url, mc.token, nb);
+        if (!usr) { await interaction.editReply(`❌ No encontré **${nb}** en Moodle ${mc.nombre}.`); break; }
+        const cs  = await getCursos(mc.url, mc.token);
+        if (!Array.isArray(cs)) { await interaction.editReply('No se pudo obtener los cursos.'); break; }
+        let msg = `📊 **Notas de ${usr.fullname}:**\n`;
+        for (const c of cs.filter(x=>x.visible===1&&x.id>1).slice(0,3)) {
+          const n = await getNotas(mc.url, mc.token, usr.id, c.id);
+          if (!n?.usergrades?.length) continue;
+          msg += `\n**${c.shortname}:**\n`;
+          for (const item of (n.usergrades[0]?.gradeitems||[]).slice(0,5))
+            msg += `  • ${item.itemname}: **${item.gradeformatted||'Sin calificar'}**\n`;
         }
-        await interaction.editReply(safe(msg || 'No se encontraron notas.'));
+        await interaction.editReply(safe(msg||'No se encontraron notas.'));
         break;
       }
 
       case 'evento': {
-        const titulo      = interaction.options.getString('titulo');
-        const fecha       = interaction.options.getString('fecha');
-        const tipo        = interaction.options.getString('tipo');
-        const descripcion = interaction.options.getString('descripcion') || '';
-        if (!parseFecha(fecha)) { await interaction.editReply('❌ Fecha inválida. Formato: dd/mm/yyyy (ej: 30/05/2026)'); break; }
-        const id   = eventoCounter++;
-        const dias = diasRestantes(parseFecha(fecha));
-        eventos.set(id, { titulo, fecha, tipo, descripcion, avisado3d: false, avisado1d: false, avisadoHoy: false });
+        const titulo = interaction.options.getString('titulo');
+        const fecha  = interaction.options.getString('fecha');
+        const tipo   = interaction.options.getString('tipo');
+        const desc   = interaction.options.getString('descripcion') || '';
+        if (!parseFecha(fecha)) { await interaction.editReply('❌ Fecha inválida. Formato: dd/mm/yyyy'); break; }
+        const id = eventoCounter++;
+        eventos.set(id, { titulo, fecha, tipo, descripcion: desc, av3: false, av1: false, av0: false });
         guardarDatos();
-        await interaction.editReply(`${emojiTipo(tipo)} **#${id} — ${titulo}**\n📅 ${fecha} (${dias < 0 ? 'ya pasó' : dias === 0 ? 'HOY' : 'en ' + dias + ' días'})\n\nAvisaré 3 días antes, 1 día antes y el mismo día en #aviso.`);
+        const d = diasHasta(parseFecha(fecha));
+        await interaction.editReply(`${emojiTipo(tipo)} **#${id} — ${titulo}**\n📅 ${fecha} (${d<0?'ya pasó':d===0?'HOY':'en '+d+' días'})\n\nAvisaré 3 días antes, 1 día antes y el mismo día en #aviso.`);
         break;
       }
 
       case 'calendario': {
-        const lista   = [...eventos.entries()].sort((a, b) => parseFecha(a[1].fecha) - parseFecha(b[1].fecha));
-        const futuros = lista.filter(([, ev]) => diasRestantes(parseFecha(ev.fecha)) >= 0);
-        const pasados = lista.filter(([, ev]) => diasRestantes(parseFecha(ev.fecha)) < 0);
+        const lista   = [...eventos.entries()].sort((a,b) => parseFecha(a[1].fecha) - parseFecha(b[1].fecha));
+        const futuros = lista.filter(([,ev]) => diasHasta(parseFecha(ev.fecha)) >= 0);
+        const pasados = lista.filter(([,ev]) => diasHasta(parseFecha(ev.fecha)) < 0);
         let msg = '📅 **CALENDARIO DEL CUATRIMESTRE**\n\n';
-        if (futuros.length) msg += '**Próximos:**\n\n' + formatEventos(futuros);
-        if (pasados.length) msg += '\n\n**Pasados:**\n\n' + formatEventos(pasados);
-        if (!lista.length)  msg += 'No hay eventos. Agregá con /evento';
+        if (futuros.length) msg += '**Próximos:**\n\n' + fmtEventos(futuros);
+        if (pasados.length) msg += '\n\n**Pasados:**\n\n' + fmtEventos(pasados);
+        if (!lista.length)  msg += 'No hay eventos. El profesor puede agregar con /evento';
         await interaction.editReply(safe(msg));
         break;
       }
 
       case 'proximo': {
-        const futuros = [...eventos.entries()].filter(([, ev]) => diasRestantes(parseFecha(ev.fecha)) >= 0).sort((a, b) => parseFecha(a[1].fecha) - parseFecha(b[1].fecha));
-        if (!futuros.length) { await interaction.editReply('No hay eventos próximos.'); break; }
-        const [, ev] = futuros[0];
-        const dias   = diasRestantes(parseFecha(ev.fecha));
-        await interaction.editReply(`${emojiTipo(ev.tipo)} **${ev.titulo}**\n📅 **${ev.fecha}** — ${dias === 0 ? '**HOY**' : dias === 1 ? 'mañana' : 'en **' + dias + ' días**'}${ev.descripcion ? '\n📋 ' + ev.descripcion : ''}`);
+        const f = [...eventos.entries()].filter(([,ev])=>diasHasta(parseFecha(ev.fecha))>=0).sort((a,b)=>parseFecha(a[1].fecha)-parseFecha(b[1].fecha));
+        if (!f.length) { await interaction.editReply('No hay eventos próximos.'); break; }
+        const [,ev] = f[0]; const d = diasHasta(parseFecha(ev.fecha));
+        await interaction.editReply(`${emojiTipo(ev.tipo)} **${ev.titulo}**\n📅 **${ev.fecha}** — ${d===0?'**HOY**':d===1?'mañana':'en **'+d+' días**'}${ev.descripcion?'\n📋 '+ev.descripcion:''}`);
         break;
       }
 
@@ -1023,107 +1012,101 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
 
       case 'quiz': {
-        const unidadNum = interaction.options.getInteger('unidad');
-        const userId    = interaction.user.id;
-        const ctx       = getContexto(interaction.guildId, interaction.channel?.name);
+        const unum = interaction.options.getInteger('unidad');
+        const uid  = interaction.user.id;
         await interaction.editReply('🧠 Generando pregunta...');
-        const quizResp = await anthropic.messages.create({
+        const r = await anthropic.messages.create({
           model: 'claude-sonnet-4-20250514', max_tokens: 500,
-          messages: [{ role: 'user', content: `${ctx}\n\nGenerá UNA pregunta de opción múltiple sobre la Unidad ${unidadNum}. SOLO JSON: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
+          messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nGenerá UNA pregunta de opción múltiple sobre la Unidad ${unum}. SOLO JSON sin markdown: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
         });
-        let quizData;
-        try { quizData = JSON.parse(quizResp.content[0].text.replace(/```json|```/g, '').trim()); }
+        let qd;
+        try { qd = JSON.parse(r.content[0].text.replace(/```json|```/g,'').trim()); }
         catch { await interaction.editReply('❌ Error generando pregunta. Intentá de nuevo.'); break; }
-        quizActivo.set(userId, { ...quizData, unidad: unidadNum, respondido: false });
-        const botonesQuiz = new ActionRowBuilder().addComponents(
-          ...'ABCD'.split('').map(l => new ButtonBuilder().setCustomId(`quiz_${l}_${userId}`).setLabel(l).setStyle(ButtonStyle.Secondary))
-        );
-        await interaction.editReply({ content: safe(`🧠 **Quiz Unidad ${unidadNum}**\n\n${quizData.pregunta}\n\n${quizData.opciones.join('\n')}\n\nSeleccioná:`), components: [botonesQuiz] });
+        quizActivo.set(uid, { ...qd, unidad: unum, respondido: false });
+        await interaction.editReply({ content: safe(`🧠 **Quiz U${unum}**\n\n${qd.pregunta}\n\n${qd.opciones.join('\n')}\n\nSeleccioná:`), components: [
+          new ActionRowBuilder().addComponents(
+            ...'ABCD'.split('').map(l => new ButtonBuilder().setCustomId(`quiz_${l}_${uid}`).setLabel(l).setStyle(ButtonStyle.Secondary))
+          )
+        ]});
         break;
       }
 
       case 'desafio': {
-        const materia = interaction.options.getString('materia').toLowerCase();
-        const ctx     = CONTEXTOS[materia] || CONTEXTOS.iev;
+        const mat = interaction.options.getString('materia').toLowerCase();
         await interaction.editReply('⏳ Generando desafio...');
-        const respD = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${ctx}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
+        const r  = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
         const id = desafioCounter++;
         desafioActivo = id;
-        desafios.set(id, { enunciado: respD.content[0].text, materia, soluciones: new Map() });
+        desafios.set(id, { enunciado: r.content[0].text, materia: mat, soluciones: new Map() });
         await interaction.editReply('✅ Desafio publicado.');
-        await interaction.channel.send(safe(`🏆 **DESAFIO SEMANAL #${id}**\n\n${respD.content[0].text}\n\n+25 pts. Usá /solucionar para enviar tu respuesta.`));
+        await interaction.channel.send(safe(`🏆 **DESAFIO SEMANAL #${id}**\n\n${r.content[0].text}\n\n+25 pts. Usá /solucionar para enviar tu respuesta.`));
         break;
       }
 
       case 'solucionar': {
         if (!desafioActivo || !desafios.has(desafioActivo)) { await interaction.editReply('❌ No hay desafio activo.'); break; }
-        const desafio = desafios.get(desafioActivo);
-        const userId  = interaction.user.id;
-        const nombre  = interaction.member?.displayName || interaction.user.username;
-        const codigo  = interaction.options.getString('codigo');
-        if (desafio.soluciones.has(userId)) { await interaction.editReply('✅ Ya enviaste una solución.'); break; }
-        desafio.soluciones.set(userId, { nombre, codigo, hora: horaAR() });
-        const p  = darPuntos(userId, nombre, 'entrega');
-        const p2 = darPuntos(userId, nombre, 'pregunta');
-        await actualizarRolDiscord(interaction.member, p2.pts);
-        const evalR = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[desafio.materia] || CONTEXTOS.iev}\nDesafio: ${desafio.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico.` }] });
-        await interaction.editReply(safe(`✅ **${nombre}** — solución registrada.\n\n🤖 ${evalR.content[0].text}\n\n📤 +25 pts | Total: **${p2.pts} pts**`));
+        const des    = desafios.get(desafioActivo);
+        const uid    = interaction.user.id;
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        const codigo = interaction.options.getString('codigo');
+        if (des.soluciones.has(uid)) { await interaction.editReply('✅ Ya enviaste una solución.'); break; }
+        des.soluciones.set(uid, { nombre, codigo, hora: horaAR() });
+        const p  = darPuntos(uid, nombre, 'entrega');
+        const p2 = darPuntos(uid, nombre, 'pregunta');
+        await actualizarRol(interaction.member, p2.pts);
+        const ev = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
+        await interaction.editReply(safe(`✅ **${nombre}** — solución registrada.\n\n🤖 ${ev.content[0].text}\n\n📤 +25 pts | Total: **${p2.pts} pts**`));
         break;
       }
 
       case 'soluciones': {
         if (!desafioActivo || !desafios.has(desafioActivo)) { await interaction.editReply('No hay desafio activo.'); break; }
-        const desafio = desafios.get(desafioActivo);
-        if (!desafio.soluciones.size) { await interaction.editReply('Ningún alumno envió solución todavía.'); break; }
-        const lista = [...desafio.soluciones.values()].map((s, i) => `${i + 1}. **${s.nombre}** (${s.hora}): ${s.codigo.substring(0, 80)}`).join('\n');
-        await interaction.editReply(safe(`📋 **Soluciones (${desafio.soluciones.size}):**\n\n${lista}`));
+        const des = desafios.get(desafioActivo);
+        if (!des.soluciones.size) { await interaction.editReply('Ningún alumno envió solución todavía.'); break; }
+        const lista = [...des.soluciones.values()].map((s,i) => `${i+1}. **${s.nombre}** (${s.hora}): ${s.codigo.substring(0,80)}`).join('\n');
+        await interaction.editReply(safe(`📋 **Soluciones (${des.soluciones.size}):**\n\n${lista}`));
         break;
       }
 
       case 'cerrar-desafio': {
         if (!desafioActivo || !desafios.has(desafioActivo)) { await interaction.editReply('No hay desafio activo.'); break; }
-        const desafio = desafios.get(desafioActivo);
-        if (!desafio.soluciones.size) { desafioActivo = null; await interaction.editReply('Cerrado sin participantes.'); break; }
-        const [ganadorId, ganadorData] = [...desafio.soluciones.entries()][0];
-        const gm  = await interaction.guild.members.fetch(ganadorId).catch(() => null);
-        const pG2 = darPuntos(ganadorId, ganadorData.nombre, 'entrega');
-        if (gm) await actualizarRolDiscord(gm, pG2.pts);
+        const des = desafios.get(desafioActivo);
+        if (!des.soluciones.size) { desafioActivo = null; await interaction.editReply('Cerrado sin participantes.'); break; }
+        const [gid, gd] = [...des.soluciones.entries()][0];
+        const gm = await interaction.guild.members.fetch(gid).catch(()=>null);
+        const pG = darPuntos(gid, gd.nombre, 'entrega'); darPuntos(gid, gd.nombre, 'entrega');
+        if (gm) await actualizarRol(gm, pG.pts + 20);
         desafioActivo = null;
         await interaction.editReply('✅ Desafio cerrado.');
-        await interaction.channel.send(`🏆 **DESAFIO CERRADO** — ${desafio.soluciones.size} participantes\n🥇 **${ganadorData.nombre}** — primera solución (${ganadorData.hora})\n\n¡Felicitaciones! Usá /ranking para ver los cambios.`);
+        await interaction.channel.send(`🏆 **DESAFIO CERRADO** — ${des.soluciones.size} participantes\n🥇 **${gd.nombre}** — primera solución (${gd.hora})\n\n¡Felicitaciones a todos! Usá /ranking.`);
         break;
       }
 
       case 'tarea': {
-        const titulo      = interaction.options.getString('titulo');
-        const descripcion = interaction.options.getString('descripcion');
-        const fecha       = interaction.options.getString('fecha');
+        const titulo = interaction.options.getString('titulo');
+        const desc   = interaction.options.getString('descripcion');
+        const fecha  = interaction.options.getString('fecha');
         if (!parseFecha(fecha)) { await interaction.editReply('❌ Fecha inválida. Formato: dd/mm/yyyy'); break; }
-        const id      = tareaCounter++;
+        const id = tareaCounter++;
+        tareas.set(id, { titulo, descripcion: desc, fecha, canal: interaction.channelId, completados: new Set() });
+        guardarDatos();
         const botones = new ActionRowBuilder().addComponents(
           new ButtonBuilder().setCustomId(`completar_${id}`).setLabel('✅  Marcar como completada').setStyle(ButtonStyle.Success),
           new ButtonBuilder().setCustomId(`vercompletados_${id}`).setLabel('👥  Ver quién completó').setStyle(ButtonStyle.Secondary)
         );
-        tareas.set(id, { titulo, descripcion, fecha, canal: interaction.channelId, completados: new Set() });
-        guardarDatos();
         await interaction.editReply('✅ Tarea publicada.');
-        await interaction.channel.send({ content: `📚 **NUEVA TAREA #${id}**\n\n📌 **${titulo}**\n\n${descripcion}\n\n⏰ **Fecha límite:** ${fecha}`, components: [botones] });
-        const recordatorio = parseFecha(fecha).getTime() - Date.now() - 86400000;
-        if (recordatorio > 0) {
-          setTimeout(async () => {
-            const t = tareas.get(id);
-            if (t) {
-              const canal = interaction.guild.channels.cache.get(t.canal);
-              if (canal) await canal.send(`⚠️ **Recordatorio:** **"${t.titulo}"** vence mañana **${t.fecha}** — ${t.completados.size} completaron.`);
-            }
-          }, recordatorio);
-        }
+        await interaction.channel.send({ content: `📚 **NUEVA TAREA #${id}**\n\n📌 **${titulo}**\n\n${desc}\n\n⏰ **Fecha límite:** ${fecha}`, components: [botones] });
+        const rem = parseFecha(fecha).getTime() - Date.now() - 86400000;
+        if (rem > 0) setTimeout(async () => {
+          const t = tareas.get(id);
+          if (t) { const c = interaction.guild.channels.cache.get(t.canal); if (c) await c.send(`⚠️ **Recordatorio:** **"${t.titulo}"** vence mañana **${t.fecha}** — ${t.completados.size} completaron.`); }
+        }, rem);
         break;
       }
 
       case 'tareas': {
         if (!tareas.size) { await interaction.editReply('No hay tareas activas.'); break; }
-        const lista = [...tareas.entries()].map(([id, t]) => `**#${id} — ${t.titulo}**\n⏰ ${t.fecha} | ✅ ${t.completados.size} completaron`).join('\n\n');
+        const lista = [...tareas.entries()].map(([id,t]) => `**#${id} — ${t.titulo}**\n⏰ ${t.fecha} | ✅ ${t.completados.size} completaron`).join('\n\n');
         await interaction.editReply(safe(`📚 **Tareas activas:**\n\n${lista}`));
         break;
       }
@@ -1132,49 +1115,74 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const id    = interaction.options.getInteger('id');
         const tarea = tareas.get(id);
         if (!tarea) { await interaction.editReply(`❌ No existe la tarea #${id}.`); break; }
-        const userId = interaction.user.id;
+        const uid    = interaction.user.id;
         const nombre = interaction.member?.displayName || interaction.user.username;
-        if (tarea.completados.has(userId)) { await interaction.editReply(`✅ **${nombre}**, ya marcaste esta tarea.`); break; }
-        tarea.completados.add(userId); guardarDatos();
-        const p = darPuntos(userId, nombre, 'entrega');
-        await actualizarRolDiscord(interaction.member, p.pts);
+        if (tarea.completados.has(uid)) { await interaction.editReply(`✅ **${nombre}**, ya marcaste esta tarea.`); break; }
+        tarea.completados.add(uid); guardarDatos();
+        const p = darPuntos(uid, nombre, 'entrega');
+        await actualizarRol(interaction.member, p.pts);
         await interaction.editReply(`✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`);
         break;
       }
 
       case 'similitudes': {
-        if (!entregasPorActividad.size) { await interaction.editReply('No hay entregas registradas aún.'); break; }
+        if (!entregasPorActiv.size) { await interaction.editReply('No hay entregas registradas aún.'); break; }
         let msg = '🔍 **Entregas por actividad:**\n\n';
-        for (const [actividad, lista] of entregasPorActividad.entries())
-          msg += `📚 **${actividad}** — ${lista.length} entrega${lista.length !== 1 ? 's' : ''}\n${lista.map(e => `  · ${e.nombre} (${e.hora})`).join('\n')}\n\n`;
+        for (const [act, lista] of entregasPorActiv.entries())
+          msg += `📚 **${act}** — ${lista.length} entrega${lista.length!==1?'s':''}\n${lista.map(e=>`  · ${e.nombre} (${e.hora})`).join('\n')}\n\n`;
         await interaction.editReply(safe(msg));
         break;
       }
 
       case 'backup':
-        await interaction.editReply('💾 Guardando puntos en Google Sheets...');
-        await backupPuntosSheets();
-        await interaction.editReply(`✅ Backup completado. ${puntos.size} alumnos guardados en la hoja "Puntos".`);
+        await interaction.editReply('💾 Guardando en Google Sheets...');
+        await backupPuntos();
+        await interaction.editReply(`✅ Backup completado — ${puntos.size} alumnos guardados.`);
         break;
     }
   } catch (e) {
-    console.error(`Error en /${interaction.commandName}:`, e);
+    LOG.error(`Error en /${interaction.commandName}`, e);
     try { await interaction.editReply('❌ Error inesperado. Intentá de nuevo.'); } catch {}
   }
 });
 
-// =============================================
-// BIENVENIDA
-// =============================================
+// ════════════════════════════════════════════════════════════════
+// BIENVENIDA A NUEVOS MIEMBROS
+// ════════════════════════════════════════════════════════════════
 client.on(Events.GuildMemberAdd, async (member) => {
-  const canal   = member.guild.channels.cache.find(c => c.name === 'aviso' || c.name === 'bienvenida');
-  const esIES11 = member.guild.name.toLowerCase().includes('11');
-  if (canal) {
-    await canal.send(esIES11
-      ? `👋 ¡Bienvenido/a **${member.displayName}** al IES N°11!\n\n📚 Tecnicatura en Desarrollo de Software\n• **/preguntar** — consultá BD o Informática con IA\n• **/quiz** — practicá con preguntas interactivas\n• **#entregas** — entregá y la IA corrige\n• **/ayuda** — ver todos los comandos`
-      : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias disponibles:\n• 🌐 Internet y Entornos Virtuales → #iev\n• 🎯 Práctica Profesionalizante III → #practica\n• ☕ Programación y Base de Datos → #pybd\n\n• **#entregas** — entregá y el bot corrige\n• **/ayuda** — ver todos los comandos\n• 📰 Noticias tech en **#noticias-tech**`
-    );
-  }
+  const canal   = member.guild.channels.cache.find(c => c.name==='aviso'||c.name==='bienvenida');
+  const es11    = member.guild.name.toLowerCase().includes('11');
+  if (!canal) return;
+  await canal.send(es11
+    ? `👋 ¡Bienvenido/a **${member.displayName}** al IES N°11!\n\n📚 Tecnicatura en Desarrollo de Software\n• **/preguntar** — consultá BD o Informática con IA\n• **/quiz** — practicá interactivamente\n• **#entregas** — entregá y la IA corrige\n• **/ayuda** — todos los comandos`
+    : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias:\n• 🌐 IEV → #iev\n• 🎯 PP3 → #practica\n• ☕ PyBD → #pybd\n\n• **#entregas** — entregá y el bot corrige\n• **/ayuda** — todos los comandos\n• 📰 Noticias tech en **#noticias-tech**`
+  );
 });
 
-client.login(DISCORD_TOKEN);
+// ════════════════════════════════════════════════════════════════
+// ANTI-CRASH — captura errores no manejados
+// ════════════════════════════════════════════════════════════════
+process.on('unhandledRejection', (reason) => LOG.error('unhandledRejection', reason));
+process.on('uncaughtException',  (err)    => LOG.error('uncaughtException',  err));
+
+// ════════════════════════════════════════════════════════════════
+// GRACEFUL SHUTDOWN — limpieza ordenada al apagar
+// ════════════════════════════════════════════════════════════════
+async function shutdown(signal) {
+  LOG.warn(`Señal ${signal} recibida — guardando datos antes de apagar...`);
+  guardarDatos();
+  await new Promise(r => setTimeout(r, 3500)); // espera el debounce
+  LOG.info('Datos guardados. Cerrando bot.');
+  client.destroy();
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+
+// ════════════════════════════════════════════════════════════════
+// LOGIN
+// ════════════════════════════════════════════════════════════════
+client.login(DISCORD_TOKEN).catch(e => {
+  LOG.error('Error al hacer login en Discord', e);
+  process.exit(1);
+});
