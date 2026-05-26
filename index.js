@@ -247,10 +247,9 @@ client.on(Events.InteractionCreate, async interaction => {
         break;
 
       case 'herramientas':
-        const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-        await interaction.editRemateria] || HERRAMIENTAS.iev);
-        break;
-
+       const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
+       await interaction.editReply(HERRAMIENTAS[materia] || HERRAMIENTAS.iev);
+       break;
       case 'ayuda':
         await interaction.editReply('📋 Usa `/ayuda` para ver los comandos disponibles.');
         break;
