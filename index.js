@@ -89,8 +89,13 @@ const puntos      = new Map(); // userId  → { nombre, pts, entregas, asistenci
 const registros   = new Map(); // userId  → { nombreReal, dni, carrera, registradoEn }
 const tareas      = new Map(); // id      → { titulo, descripcion, fecha, canal, completados: Set }
 const eventos     = new Map(); // id      → { titulo, fecha, tipo, descripcion, avisados }
+const rubricas    = new Map(); // clave   → { materia, actividad, criterios: [{nombre, descripcion, peso}] }
+const historial   = new Map(); // userId  → [{ actividad, fecha, link, explicacion, evaluacion, pts }]
+const logros_def  = new Map(); // id      → { nombre, emoji, descripcion, condicion }
+const cacheIA     = new Map(); // hash    → { respuesta, expira }
 let tareaCounter  = 1;
 let eventoCounter = 1;
+let torneoActivo  = null; // { pregunta, opciones, correcta, respuestas: Map, cierra: timestamp }
 
 function cargarDatos() {
   try {
@@ -101,6 +106,8 @@ function cargarDatos() {
     if (raw.tareas)  for (const [k, v] of Object.entries(raw.tareas))
       tareas.set(parseInt(k), { ...v, completados: new Set(v.completados || []) });
     if (raw.registros) for (const [k, v] of Object.entries(raw.registros)) registros.set(k, v);
+    if (raw.historial)  for (const [k, v] of Object.entries(raw.historial))  historial.set(k, v);
+    if (raw.rubricas)   for (const [k, v] of Object.entries(raw.rubricas))   rubricas.set(k, v);
     if (raw.tareaCounter)  tareaCounter  = raw.tareaCounter;
     if (raw.eventoCounter) eventoCounter = raw.eventoCounter;
     LOG.info(`Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
@@ -116,6 +123,8 @@ function guardarDatos() {
       fs.writeFileSync(DATA_FILE, JSON.stringify({
         puntos:       Object.fromEntries(puntos),
         registros:    Object.fromEntries(registros),
+        historial:    Object.fromEntries(historial),
+        rubricas:     Object.fromEntries(rubricas),
         eventos:      Object.fromEntries(eventos),
         tareas:       Object.fromEntries([...tareas.entries()].map(([k, v]) => [k, { ...v, completados: [...v.completados] }])),
         tareaCounter,
@@ -177,7 +186,8 @@ function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
 // Comandos restringidos al profesor
 const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
-  'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos'
+  'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
+  'rubrica','generar-parcial','riesgo','torneo'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -292,14 +302,22 @@ const HERRAMIENTAS = {
 // SISTEMA DE PUNTOS Y ROLES
 // ════════════════════════════════════════════════════════════════
 function darPuntos(userId, nombre, tipo) {
-  if (!puntos.has(userId)) puntos.set(userId, { nombre, pts: 0, entregas: 0, asistencias: 0, preguntas: 0 });
+  if (!puntos.has(userId)) puntos.set(userId, { nombre, pts: 0, entregas: 0, asistencias: 0, preguntas: 0, streak: 0, ultimaClase: '', logros: [] });
   const p = puntos.get(userId);
   p.nombre = nombre;
+  if (!p.logros)      p.logros  = [];
+  if (!p.streak)      p.streak  = 0;
+  if (!p.ultimaClase) p.ultimaClase = '';
   const delta = { asistencia: 10, entrega: 20, pregunta: 5 }[tipo] || 0;
   p.pts += delta;
-  if (tipo === 'asistencia') p.asistencias++;
-  if (tipo === 'entrega')    p.entregas++;
-  if (tipo === 'pregunta')   p.preguntas++;
+  if (tipo === 'asistencia') {
+    p.asistencias++;
+    const hoy = fechaAR();
+    // Streak: si la última clase fue ayer o hoy (en la misma clase) mantiene racha
+    if (p.ultimaClase !== hoy) { p.streak = (p.streak||0) + 1; p.ultimaClase = hoy; }
+  }
+  if (tipo === 'entrega')  p.entregas++;
+  if (tipo === 'pregunta') p.preguntas++;
   puntos.set(userId, p);
   guardarDatos();
   return p;
@@ -405,6 +423,93 @@ async function getSheets() {
 // ════════════════════════════════════════════════════════════════
 // REGISTRO DE ALUMNOS — nombre real
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// DEFINICIÓN DE LOGROS
+// ════════════════════════════════════════════════════════════════
+const LOGROS = [
+  { id: 'primera_clase',    emoji: '🎉', nombre: 'Primera clase',       desc: 'Asististe a tu primera clase',              pts: 5  },
+  { id: 'streak_5',         emoji: '🔥', nombre: 'Racha de 5',          desc: '5 clases consecutivas sin faltar',          pts: 15 },
+  { id: 'streak_10',        emoji: '⚡', nombre: 'Racha de 10',         desc: '10 clases consecutivas sin faltar',         pts: 30 },
+  { id: 'primera_entrega',  emoji: '📤', nombre: 'Primera entrega',     desc: 'Entregaste tu primer trabajo',              pts: 10 },
+  { id: 'cinco_entregas',   emoji: '📚', nombre: 'Entregador',          desc: '5 trabajos entregados',                    pts: 20 },
+  { id: 'quiz_master',      emoji: '🧠', nombre: 'Quiz Master',         desc: '3 quizzes correctos seguidos',              pts: 25 },
+  { id: 'curioso',          emoji: '🔍', nombre: 'Curioso',             desc: '10 preguntas a la IA',                     pts: 10 },
+  { id: 'puntual',          emoji: '⏰', nombre: 'Puntual',             desc: 'Llegaste en los primeros 5 min 3 veces',   pts: 15 },
+  { id: 'registrado',       emoji: '✅', nombre: 'Identificado',        desc: 'Te registraste con tu nombre real',         pts: 5  },
+  { id: 'desafiante',       emoji: '🏆', nombre: 'Desafiante',          desc: 'Resolviste tu primer desafio semanal',      pts: 20 },
+];
+
+function verificarLogros(userId, nombre, puntoData, canal) {
+  const logrosUsuario = puntoData.logros || [];
+  const nuevos = [];
+  const p = puntoData;
+
+  const check = (id) => !logrosUsuario.includes(id);
+  if (check('primera_clase')   && p.asistencias >= 1)  nuevos.push('primera_clase');
+  if (check('streak_5')        && (p.streak||0) >= 5)  nuevos.push('streak_5');
+  if (check('streak_10')       && (p.streak||0) >= 10) nuevos.push('streak_10');
+  if (check('primera_entrega') && p.entregas >= 1)     nuevos.push('primera_entrega');
+  if (check('cinco_entregas')  && p.entregas >= 5)     nuevos.push('cinco_entregas');
+  if (check('curioso')         && p.preguntas >= 10)   nuevos.push('curioso');
+  if (check('registrado')      && registros.has(userId)) nuevos.push('registrado');
+
+  if (nuevos.length) {
+    puntoData.logros = [...logrosUsuario, ...nuevos];
+    nuevos.forEach(id => {
+      const logro = LOGROS.find(l => l.id === id);
+      if (logro) { puntoData.pts += logro.pts; }
+    });
+    puntos.set(userId, puntoData);
+    guardarDatos();
+  }
+  return nuevos;
+}
+
+// ════════════════════════════════════════════════════════════════
+// CACHÉ DE RESPUESTAS DE IA (24 horas)
+// ════════════════════════════════════════════════════════════════
+const CACHE_TTL = 24 * 60 * 60 * 1000;
+function hashPregunta(texto) {
+  let h = 0;
+  for (let i = 0; i < Math.min(texto.length, 100); i++) h = (h * 31 + texto.charCodeAt(i)) & 0xffffffff;
+  return h.toString(36);
+}
+function getCache(texto) {
+  const k = hashPregunta(texto.toLowerCase().trim());
+  const v = cacheIA.get(k);
+  if (v && Date.now() < v.expira) return v.respuesta;
+  if (v) cacheIA.delete(k);
+  return null;
+}
+function setCache(texto, respuesta) {
+  cacheIA.set(hashPregunta(texto.toLowerCase().trim()), { respuesta, expira: Date.now() + CACHE_TTL });
+}
+
+// ════════════════════════════════════════════════════════════════
+// COLA DE MENSAJES PARA IA (máx 3 simultáneos)
+// ════════════════════════════════════════════════════════════════
+let iaActivas = 0;
+const IA_MAX  = 3;
+async function llamarIA(params) {
+  while (iaActivas >= IA_MAX) await new Promise(r => setTimeout(r, 500));
+  iaActivas++;
+  try { return await anthropic.messages.create(params); }
+  finally { iaActivas--; }
+}
+
+// ════════════════════════════════════════════════════════════════
+// LOGGING DE ERRORES A GOOGLE SHEETS
+// ════════════════════════════════════════════════════════════════
+async function logErrorSheets(comando, error, guild) {
+  try {
+    const sheets = await getSheets();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID, range: 'Errores!A:E', valueInputOption: 'USER_ENTERED',
+      resource: { values: [[ahoraAR(), guild||'—', comando||'—', (error?.message||String(error)).substring(0,200), error?.stack?.split('\n')[1]||'']] }
+    });
+  } catch {} // no recursión si falla el logging
+}
+
 function getNombreReal(userId, fallback) {
   const reg = registros.get(userId);
   return reg ? reg.nombreReal : fallback;
@@ -502,10 +607,16 @@ async function publicarNoticias(guild) {
 // ════════════════════════════════════════════════════════════════
 async function corregirEntrega(texto, gid, ch) {
   if (!texto || texto.length < 20) return null;
-  const r = await anthropic.messages.create({
+  // Verificar si hay rúbrica para esta actividad
+  const mat     = detectarMateria(gid, ch);
+  const rubrica = [...rubricas.values()].find(r => texto.toLowerCase().includes(r.actividad.toLowerCase()) && r.materia === mat);
+  const rubricaInstruccion = rubrica
+    ? `\n\nEVALUÁ SEGÚN ESTA RÚBRICA (mencioná cada criterio explícitamente):\n${rubrica.criterios.map((c,i)=>`${i+1}. ${c}`).join('\n')}`
+    : '';
+  const r = await llamarIA({
     model: 'claude-sonnet-4-20250514', max_tokens: 1200,
     messages: [{ role: 'user', content:
-      `${getContexto(gid, ch)}\n\nCorregí pedagógicamente este trabajo:\n\n✅ **Aspectos positivos:**\n[puntos fuertes]\n\n🔧 **Aspectos a mejorar:**\n[lo incompleto]\n\n📊 **Evaluación orientativa:** [Excelente/Muy bueno/Bueno/Regular/Insuficiente]\n\n💡 **Sugerencia:**\n[consejo personal]\n\nTRABAJO:\n${texto.substring(0, 3000)}`
+      `${getContexto(gid, ch)}${rubricaInstruccion}\n\nCorregí pedagógicamente este trabajo:\n\n✅ **Aspectos positivos:**\n[puntos fuertes]\n\n🔧 **Aspectos a mejorar:**\n[lo incompleto]\n\n📊 **Evaluación orientativa:** [Excelente/Muy bueno/Bueno/Regular/Insuficiente]\n\n💡 **Sugerencia:**\n[consejo personal]\n\nTRABAJO:\n${texto.substring(0, 3000)}`
     }]
   });
   return r.content[0].text;
@@ -581,6 +692,22 @@ const commands = [
   new SlashCommandBuilder().setName('misregistro').setDescription('Ver tu registro actual'),
   new SlashCommandBuilder().setName('alumnos').setDescription('👨‍🏫 Ver listado de alumnos registrados (profesor)'),
   new SlashCommandBuilder().setName('ayuda').setDescription('Ver todos los comandos disponibles'),
+  new SlashCommandBuilder().setName('mislogros').setDescription('Ver tus logros desbloqueados'),
+  new SlashCommandBuilder().setName('historial').setDescription('Ver historial de entregas de un alumno')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno (solo profesor) o dejá vacío para el tuyo').setRequired(false)),
+  new SlashCommandBuilder().setName('rubrica')
+    .setDescription('👨‍🏫 Gestionar rúbricas de evaluación')
+    .addStringOption(o => o.setName('accion').setDescription('crear o ver').setRequired(true).addChoices(
+      { name: 'Crear', value: 'crear' }, { name: 'Ver', value: 'ver' }, { name: 'Listar', value: 'listar' }))
+    .addStringOption(o => o.setName('actividad').setDescription('Nombre de la actividad').setRequired(false))
+    .addStringOption(o => o.setName('criterios').setDescription('Criterios separados por | (ej: "E-R correcto|Cardinalidad|SQL válido")').setRequired(false)),
+  new SlashCommandBuilder().setName('generar-parcial')
+    .setDescription('👨‍🏫 Generar un examen parcial con IA')
+    .addIntegerOption(o => o.setName('unidad_desde').setDescription('Unidad desde (ej: 1)').setRequired(true).setMinValue(1).setMaxValue(8))
+    .addIntegerOption(o => o.setName('unidad_hasta').setDescription('Unidad hasta (ej: 4)').setRequired(true).setMinValue(1).setMaxValue(8)),
+  new SlashCommandBuilder().setName('riesgo').setDescription('👨‍🏫 Ver alumnos con baja asistencia'),
+  new SlashCommandBuilder().setName('torneo').setDescription('👨‍🏫 Iniciar torneo de quizzes entre todos'),
+  new SlashCommandBuilder().setName('logros').setDescription('👨‍🏫 Ver todos los logros disponibles'),
 ];
 
 async function registrarComandos(guildId) {
@@ -658,6 +785,36 @@ client.once(Events.ClientReady, async (c) => {
     if (hora === 8 && min === 0)
       for (const g of client.guilds.cache.values()) await publicarNoticias(g);
 
+    // Alumnos en riesgo — lunes 8:30hs
+    if (dia === 1 && hora === 8 && min === 30) {
+      for (const g of client.guilds.cache.values()) {
+        if (!PROFESOR_ID) continue;
+        const riesgo = detectarAlumnosEnRiesgo();
+        if (!riesgo.length) continue;
+        try {
+          const prof = await g.client.users.fetch(PROFESOR_ID);
+          const lista = riesgo.map((r,i) => `${i+1}. **${r.nombre}** — ${r.asistencias} asistencia${r.asistencias!==1?'s':''}, ${r.entregas} entrega${r.entregas!==1?'s':''}`).join('\n');
+          await prof.send(`⚠️ **Alumnos en riesgo — ${g.name}**\n📅 ${fechaAR()}\n\n${lista}\n\nEstos alumnos tienen baja actividad. Considerá contactarlos antes de que sea tarde.`);
+        } catch(e) { LOG.error('Error DM riesgo', e); }
+      }
+    }
+
+    // Reporte semanal — viernes 18hs
+    if (dia === 5 && hora === 18 && min === 0) {
+      for (const g of client.guilds.cache.values()) {
+        if (!PROFESOR_ID) continue;
+        try {
+          const prof = await g.client.users.fetch(PROFESOR_ID);
+          await prof.send(await generarReporteSemanal(g));
+        } catch(e) { LOG.error('Error reporte semanal', e); }
+      }
+    }
+
+    // Torneo — cerrar pregunta activa
+    if (torneoActivo && Date.now() > torneoActivo.cierra) {
+      await cerrarPreguntaTorneo();
+    }
+
   }, 60000);
 });
 
@@ -715,6 +872,10 @@ client.on(Events.MessageCreate, async (msg) => {
           `${form.comentario ? `💬 **Comentario:** ${form.comentario}\n` : ''}` +
           `━━━━━━━━━━━━━━━━━━━━━━━━`
         );
+        // Guardar en historial
+        if (!historial.has(uid)) historial.set(uid, []);
+        historial.get(uid).push({ actividad: form.actividad, fecha: fechaAR(), link: form.link, explicacion: form.explicacion.substring(0,500), comentario: form.comentario });
+        guardarDatos();
         compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.explicacion} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
         const p = darPuntos(uid, nombre, 'entrega');
         await actualizarRol(msg.member, p.pts);
@@ -761,6 +922,19 @@ client.on(Events.MessageCreate, async (msg) => {
 // ════════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
 
+  // ── BOTÓN: Torneo ──
+  if (interaction.isButton() && interaction.customId.startsWith('torneo_')) {
+    const resp   = interaction.customId.split('_')[1];
+    const uid    = interaction.user.id;
+    const nombre = interaction.member?.displayName || interaction.user.username;
+    if (!torneoActivo) { await interaction.reply({ content: 'El torneo ya cerró.', ephemeral: true }); return; }
+    if (torneoActivo.respuestas.has(uid)) { await interaction.reply({ content: `✅ Ya respondiste.`, ephemeral: true }); return; }
+    torneoActivo.respuestas.set(uid, { resp, nombre, tiempo: Date.now() });
+    const esCorrecta = resp === torneoActivo.correcta;
+    await interaction.reply({ content: esCorrecta ? `✅ **Correcto!** Registrado — esperá el resultado.` : `❌ Incorrecto. Esperá el resultado.`, ephemeral: true });
+    return;
+  }
+
   // ── BOTÓN: Quiz ──
   if (interaction.isButton() && interaction.customId.startsWith('quiz_')) {
     const [, resp, tuid] = interaction.customId.split('_');
@@ -794,7 +968,9 @@ client.on(Events.InteractionCreate, async (interaction) => {
     tarea.completados.add(uid); guardarDatos();
     const p = darPuntos(uid, nombre, 'entrega');
     await actualizarRol(interaction.member, p.pts);
-    await interaction.reply({ content: `✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}` });
+    const nlT = verificarLogros(uid, nombre, p, '');
+    const lgT = nlT.length ? '\n' + nlT.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} **${l.nombre}**` : ''; }).join('\n') : '';
+    await interaction.reply({ content: `✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}${lgT}` });
     return;
   }
 
@@ -928,12 +1104,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const espera = checkCooldown(uid);
         if (espera > 0) { await interaction.editReply(`⏳ Esperá ${espera} segundos antes de otra pregunta.`); break; }
         const pregunta = interaction.options.getString('pregunta');
-        const r        = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+        // Verificar caché primero
+        const cacheKey = getContexto(interaction.guildId, interaction.channel?.name).substring(0,30) + pregunta;
+        let respText = getCache(cacheKey);
+        if (!respText) {
+          const r = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+          respText = r.content[0].text;
+          setCache(cacheKey, respText);
+        }
         const nombre   = interaction.member?.displayName || interaction.user.username;
-        darPuntos(uid, nombre, 'pregunta');
+        const pData    = darPuntos(uid, nombre, 'pregunta');
+        const nuevosL  = verificarLogros(uid, nombre, pData, interaction.channel?.name);
         const s = getSesion(interaction.guildId);
         if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: nombre });
-        await interaction.editReply(safe(`🤖 **Respuesta:**\n\n${r.content[0].text}\n\n💡 +5 pts`));
+        const logroMsg = nuevosL.length ? '\n\n' + nuevosL.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 **¡Logro desbloqueado! ${l.emoji} ${l.nombre}** (+${l.pts} pts)` : ''; }).join('\n') : '';
+        await interaction.editReply(safe(`🤖 **Respuesta:**\n\n${respText}\n\n💡 +5 pts${logroMsg}`));
         break;
       }
 
@@ -954,7 +1139,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const pos  = getPosicion(uid);
         const tot  = getRankingCompleto().length;
         const prox = p.pts >= 200 ? '' : p.pts >= 100 ? ` · Faltan ${200-p.pts} pts para Experto Digital 🏆` : p.pts >= 50 ? ` · Faltan ${100-p.pts} pts para Colaborador ⭐` : ` · Faltan ${50-p.pts} pts para Aprendiz 📚`;
-        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot}\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)`);
+        const logrosObtenidos = (p.logros||[]).map(id=>{ const l=LOGROS.find(x=>x.id===id); return l?l.emoji:''; }).join(' ') || '—';
+        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot} | 🔥 Racha: ${p.streak||0}\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)\n\n🏅 Logros: ${logrosObtenidos}\nUsá /mislogros para ver el detalle.`);
         break;
       }
 
@@ -1198,6 +1384,126 @@ client.on(Events.InteractionCreate, async (interaction) => {
         await interaction.editReply(`✅ Backup completado — ${puntos.size} alumnos guardados.`);
         break;
 
+      case 'mislogros': {
+        const uid    = interaction.user.id;
+        const nombre = interaction.member?.displayName || interaction.user.username;
+        const p      = puntos.get(uid);
+        const obtenidos = p?.logros || [];
+        const lista = LOGROS.map(l => {
+          const tiene = obtenidos.includes(l.id);
+          return `${tiene ? l.emoji : '🔒'} **${l.nombre}** — ${l.desc} (+${l.pts} pts)${tiene ? ' ✅' : ''}`;
+        }).join('\n');
+        await interaction.editReply(safe(`🏅 **Logros de ${nombre}** (${obtenidos.length}/${LOGROS.length} obtenidos)\n\n${lista}`));
+        break;
+      }
+
+      case 'logros': {
+        const lista = LOGROS.map(l => `${l.emoji} **${l.nombre}** — ${l.desc} · +${l.pts} pts`).join('\n');
+        await interaction.editReply(safe(`🏅 **Todos los logros disponibles (${LOGROS.length}):**\n\n${lista}`));
+        break;
+      }
+
+      case 'historial': {
+        const targetUser = interaction.options.getUser('alumno');
+        const uid   = targetUser ? targetUser.id : interaction.user.id;
+        const nombre = targetUser ? targetUser.username : (interaction.member?.displayName || interaction.user.username);
+        if (targetUser && !esProfesor(interaction.user.id)) { await interaction.editReply('❌ Solo el profesor puede ver el historial de otros alumnos.'); break; }
+        const hist  = historial.get(uid);
+        if (!hist || !hist.length) { await interaction.editReply(`No hay entregas registradas para **${nombre}** todavía.`); break; }
+        const lista = hist.slice(-10).reverse().map((h, i) =>
+          `**${i+1}. ${h.actividad}** · ${h.fecha}\n🔗 ${h.link}\n✍️ ${h.explicacion.substring(0,100)}${h.explicacion.length>100?'…':''}`
+        ).join('\n\n');
+        await interaction.editReply(safe(`📋 **Historial de ${getNombreReal(uid, nombre)}** (${hist.length} entregas):\n\n${lista}`));
+        break;
+      }
+
+      case 'rubrica': {
+        const accion    = interaction.options.getString('accion');
+        const actividad = interaction.options.getString('actividad') || '';
+        const crit      = interaction.options.getString('criterios') || '';
+
+        if (accion === 'crear') {
+          if (!actividad || !crit) { await interaction.editReply('❌ Necesitás especificar actividad y criterios.'); break; }
+          const criterios = crit.split('|').map(c => c.trim()).filter(Boolean);
+          const clave     = `${detectarMateria(interaction.guildId, interaction.channel?.name)}_${actividad.toLowerCase().replace(/\s+/g,'_')}`;
+          rubricas.set(clave, { materia: detectarMateria(interaction.guildId, interaction.channel?.name), actividad, criterios, creadaEn: fechaAR() });
+          guardarDatos();
+          await interaction.editReply(`✅ **Rúbrica creada para "${actividad}"**\n\nCriterios (${criterios.length}):\n${criterios.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nCuando un alumno entregue "${actividad}" la corrección usará estos criterios.`);
+        } else if (accion === 'ver') {
+          const clave = [...rubricas.keys()].find(k => k.toLowerCase().includes((actividad||'').toLowerCase()));
+          if (!clave) { await interaction.editReply('❌ No encontré una rúbrica para esa actividad.'); break; }
+          const r = rubricas.get(clave);
+          await interaction.editReply(`📋 **Rúbrica: ${r.actividad}**\n\nCriterios:\n${r.criterios.map((c,i)=>`${i+1}. ${c}`).join('\n')}\n\nCreada: ${r.creadaEn}`);
+        } else {
+          if (!rubricas.size) { await interaction.editReply('No hay rúbricas creadas todavía.'); break; }
+          const lista = [...rubricas.values()].map(r => `• **${r.actividad}** (${r.criterios.length} criterios)`).join('\n');
+          await interaction.editReply(safe(`📋 **Rúbricas activas (${rubricas.size}):**\n\n${lista}\n\nUsá /rubrica accion:ver actividad:[nombre] para ver los criterios.`));
+        }
+        break;
+      }
+
+      case 'generar-parcial': {
+        const desde = interaction.options.getInteger('unidad_desde');
+        const hasta = interaction.options.getInteger('unidad_hasta');
+        if (desde > hasta) { await interaction.editReply('❌ La unidad desde no puede ser mayor que hasta.'); break; }
+        await interaction.editReply(`⏳ Generando parcial de Unidades ${desde} a ${hasta}...`);
+        const ctx    = getContexto(interaction.guildId, interaction.channel?.name);
+        const unids  = getUnidades(interaction.guildId, interaction.channel?.name);
+        const temas  = Object.entries(unids).filter(([n])=>+n>=desde&&+n<=hasta).map(([n,v])=>`U${n}: ${v.split('\n')[0]}`).join('\n');
+        const r = await llamarIA({
+          model: 'claude-sonnet-4-20250514', max_tokens: 2000,
+          messages: [{ role: 'user', content:
+            `${ctx}\n\nGenerá un examen parcial profesional que cubra estas unidades:\n${temas}\n\n` +
+            `Incluí exactamente:\n` +
+            `**SECCIÓN A — Múltiple opción (5 preguntas, 2 pts c/u)**\n[5 preguntas con opciones A/B/C/D]\n\n` +
+            `**SECCIÓN B — Desarrollo (2 ejercicios, 10 pts c/u)**\n[2 ejercicios prácticos apropiados para la materia]\n\n` +
+            `**SECCIÓN C — Integradora (1 pregunta, 10 pts)**\n[1 pregunta que integre todos los temas]\n\n` +
+            `**HOJA DE CORRECCIÓN**\n[Respuestas esperadas para cada sección]\n\n` +
+            `Total: 40 puntos. Aprobado: 28 pts (70%).`
+          }]
+        });
+        await interaction.editReply(safe(`📝 **PARCIAL — Unidades ${desde} a ${hasta}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}`));
+        break;
+      }
+
+      case 'riesgo': {
+        const riesgo = detectarAlumnosEnRiesgo();
+        if (!riesgo.length) { await interaction.editReply('✅ No hay alumnos en riesgo. ¡Todos tienen buena actividad!'); break; }
+        const lista = riesgo.map((r,i) =>
+          `${i+1}. **${r.nombre}** — ${r.asistencias} asistencia${r.asistencias!==1?'s':''} · ${r.entregas} entrega${r.entregas!==1?'s':''} · ${r.pts} pts`
+        ).join('\n');
+        await interaction.editReply(safe(
+          `⚠️ **Alumnos en riesgo (${riesgo.length})**\n` +
+          `_Criterio: menos de 3 asistencias o 0 entregas_\n\n` +
+          `${lista}\n\n` +
+          `💡 Podés contactarlos directamente o publicar una tarea de recuperación con /tarea.`
+        ));
+        break;
+      }
+
+      case 'torneo': {
+        if (torneoActivo) { await interaction.editReply('⚠️ Ya hay un torneo activo. Esperá que termine la pregunta actual.'); break; }
+        await interaction.editReply('🏆 Iniciando torneo... Generando primera pregunta.');
+        const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const ctx  = CONTEXTOS[mat] || CONTEXTOS.iev;
+        const unum = Math.ceil(Math.random() * Object.keys(UNIDADES[mat]||UNIDADES.iev).length);
+        const r = await llamarIA({
+          model: 'claude-sonnet-4-20250514', max_tokens: 400,
+          messages: [{ role: 'user', content: `${ctx}\n\nGenerá UNA pregunta de torneo sobre la Unidad ${unum}. SOLO JSON: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
+        });
+        let qd;
+        try { qd = JSON.parse(r.content[0].text.replace(/\`\`\`json|\`\`\`/g,'').trim()); } catch { await interaction.editReply('❌ Error generando pregunta.'); break; }
+        torneoActivo = { ...qd, respuestas: new Map(), cierra: Date.now() + 30000, canal: interaction.channelId };
+        const botonesT = new ActionRowBuilder().addComponents(
+          ...'ABCD'.split('').map(l => new ButtonBuilder().setCustomId(`torneo_${l}`).setLabel(l).setStyle(ButtonStyle.Secondary))
+        );
+        await interaction.editReply({
+          content: safe(`🏆 **TORNEO — Unidad ${unum}**\n⏱️ Tenés **30 segundos**\n\n${qd.pregunta}\n\n${qd.opciones.join('\n')}\n\nEl más rápido en responder correctamente gana más puntos.`),
+          components: [botonesT]
+        });
+        break;
+      }
+
       case 'registrarme': {
         const uid         = interaction.user.id;
         const nombreReal  = interaction.options.getString('nombre').trim();
@@ -1282,6 +1588,61 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // ════════════════════════════════════════════════════════════════
 // ANTI-CRASH — captura errores no manejados
 // ════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════
+// FUNCIONES AUXILIARES — NUEVAS MEJORAS
+// ════════════════════════════════════════════════════════════════
+
+function detectarAlumnosEnRiesgo() {
+  const riesgo = [];
+  for (const [uid, p] of puntos.entries()) {
+    if ((p.asistencias||0) < 3 || (p.entregas||0) === 0) {
+      riesgo.push({ uid, nombre: p.nombre, asistencias: p.asistencias||0, entregas: p.entregas||0, pts: p.pts||0 });
+    }
+  }
+  return riesgo.sort((a,b) => a.asistencias - b.asistencias);
+}
+
+async function generarReporteSemanal(guild) {
+  const rank   = getRankingCompleto();
+  const prom   = rank.length ? Math.round(rank.reduce((s,[,p])=>s+p.pts,0)/rank.length) : 0;
+  const riesgo = detectarAlumnosEnRiesgo();
+  const sesion = getSesion(guild.id);
+  const topPreguntas = sesion.preguntas.slice(-5).map(q => `• ${q.autor}: "${q.pregunta.substring(0,60)}"`).join('\n') || '• Sin preguntas registradas';
+  return (
+    `📊 **Reporte Semanal — ${guild.name}**\n` +
+    `📅 Semana del ${fechaAR()}\n\n` +
+    `👥 Alumnos activos: ${puntos.size} | Promedio: ${prom} pts\n` +
+    `🏆 Líder: ${rank[0]?.[1]?.nombre||'—'} (${rank[0]?.[1]?.pts||0} pts)\n` +
+    `⚠️ En riesgo: ${riesgo.length} alumno${riesgo.length!==1?'s':''}\n\n` +
+    `💬 **Últimas preguntas a la IA:**\n${topPreguntas}\n\n` +
+    `📤 Entregas esta semana: ${entregasPorActiv.size} actividades\n` +
+    `🎯 Desafios activos: ${desafioActivo ? '1' : '0'}\n\n` +
+    `_Reporte automático de Mentor 🎓_`
+  );
+}
+
+async function cerrarPreguntaTorneo() {
+  if (!torneoActivo) return;
+  const t = torneoActivo;
+  torneoActivo = null;
+  let msg = `⏱️ **Tiempo!** Respuesta correcta: **${t.correcta}**\n\n`;
+  const ganadores = [...t.respuestas.entries()].filter(([,r])=>r.resp===t.correcta).sort((a,b)=>a[1].tiempo-b[1].tiempo);
+  if (ganadores.length) {
+    msg += `🏆 **Top respuestas correctas:**\n`;
+    ganadores.slice(0,3).forEach(([uid,r],i) => {
+      const medals = ['🥇','🥈','🥉'];
+      const pts = [15,10,5][i]||3;
+      const p = puntos.get(uid);
+      if (p) { p.pts += pts; puntos.set(uid, p); guardarDatos(); }
+      msg += `${medals[i]} ${r.nombre} — +${pts} pts\n`;
+    });
+  } else { msg += 'Nadie respondió correctamente.'; }
+  for (const g of client.guilds.cache.values()) {
+    const canal = g.channels.cache.find(c => c.name.includes('dudas') || c.name.includes('aviso'));
+    if (canal) await canal.send(msg).catch(()=>{});
+  }
+}
+
 process.on('unhandledRejection', (reason) => LOG.error('unhandledRejection', reason));
 process.on('uncaughtException',  (err)    => LOG.error('uncaughtException',  err));
 
