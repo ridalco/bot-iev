@@ -1,6 +1,6 @@
 // =============================================
-// BOT MENTOR IEV - VERSIÓN 2.0 PROFESIONAL
-// Corregido para Render + Hora Argentina + deferReply
+// BOT MENTOR IEV - VERSIÓN 2.0 FINAL CORREGIDA
+// Optimizada para Render + Hora Argentina + deferReply
 // =============================================
 require('dotenv').config();
 const chalk = require('chalk');
@@ -11,13 +11,12 @@ const {
 } = require('discord.js');
 
 const Anthropic = require('@anthropic-ai/sdk');
-const { google } = require('googleapis');
 
 // ====================== VALIDACIÓN DE VARIABLES ======================
 const REQUIRED_VARS = ['DISCORD_TOKEN', 'ANTHROPIC_API_KEY', 'SPREADSHEET_ID', 'GOOGLE_CREDENTIALS'];
 const missing = REQUIRED_VARS.filter(v => !process.env[v]);
 if (missing.length > 0) {
-  console.error(chalk.red(`❌ Faltan variables: ${missing.join(', ')}`));
+  console.error(`❌ Faltan variables: ${missing.join(', ')}`);
   process.exit(1);
 }
 
@@ -25,7 +24,7 @@ let GOOGLE_CREDENTIALS;
 try {
   GOOGLE_CREDENTIALS = JSON.parse(process.env.GOOGLE_CREDENTIALS);
 } catch (e) {
-  console.error(chalk.red('❌ GOOGLE_CREDENTIALS no es JSON válido'));
+  console.error('❌ GOOGLE_CREDENTIALS no es JSON válido');
   process.exit(1);
 }
 
@@ -47,7 +46,7 @@ const client = new Client({
 client.commands = new Collection();
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// ====================== HORA LOCAL ARGENTINA ======================
+// ====================== HORA ARGENTINA ======================
 function horaCortaArgentina() {
   return new Date().toLocaleTimeString('es-AR', { 
     timeZone: 'America/Argentina/Buenos_Aires',
@@ -55,25 +54,6 @@ function horaCortaArgentina() {
     minute: '2-digit' 
   });
 }
-
-// ====================== GRACEFUL SHUTDOWN ======================
-process.on('SIGTERM', () => {
-  console.log(chalk.yellow('🛑 Render → Apagando bot...'));
-  client.destroy();
-  process.exit(0);
-});
-
-process.on('unhandledRejection', (error) => {
-  console.error(chalk.red('❌ Error no manejado:'), error);
-});
-
-setInterval(() => {
-  console.log(chalk.gray(`[${horaCortaArgentina()}] Keep-alive`));
-}, 300000);
-
-client.once(Events.ClientReady, () => {
-  console.log(chalk.green.bold(`✅ BOT ONLINE → ${client.user.tag}`));
-});
 // ====================== PARTE 2/5 - PERSISTENCIA Y FUNCIONES BÁSICAS ======================
 const DATA_FILE = './data.json';
 const puntos = new Map();
@@ -165,18 +145,6 @@ function getContexto(guildId, channelName) {
   return CONTEXTOS[detectarMateria(guildId, channelName)] || CONTEXTOS.iev;
 }
 
-// ====================== UNIDADES ======================
-const UNIDADES = {
-  iev: {
-    1: '🌐 **IEV — Unidad 1: Introducción a Internet**',
-    2: '📧 **IEV — Unidad 2: Correo y Netiqueta**',
-    3: '🔍 **IEV — Unidad 3: Criterio CRAAP**',
-    4: '💬 **IEV — Unidad 4: Comunicación**',
-    5: '🖥️ **IEV — Unidad 5: Entornos Virtuales**'
-  },
-  // Agregá aquí el resto de tus unidades originales si querés
-};
-
 const HERRAMIENTAS = {
   iev: '🛠️ **Herramientas IEV:**\n📗 Moodle IES6 → ies6.aulasvirtuales.name',
   bd: '🛠️ **Herramientas BD:**\n📗 Moodle IES11 → ies11.aulasvirtuales.name',
@@ -207,12 +175,12 @@ function getRol(pts) {
   if (pts >= 50)  return { nombre: 'Aprendiz', emoji: '📚' };
   return { nombre: 'Novato', emoji: '🌱' };
 }
-// ====================== PARTE 4/5 - INTERACCIONES (CORREGIDO) ======================
+// ====================== PARTE 4/5 - INTERACCIONES CORREGIDAS ======================
 client.on(Events.InteractionCreate, async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
   try {
-    // ← ESTO ES CLAVE PARA EVITAR "Unknown interaction"
+    // ESTO ES CLAVE PARA EVITAR "Unknown interaction"
     await interaction.deferReply({ ephemeral: false });
 
     const { commandName } = interaction;
@@ -220,7 +188,7 @@ client.on(Events.InteractionCreate, async interaction => {
     switch (commandName) {
 
       case 'asistencia':
-        await registrarAsistencia(interaction);   // ← Función con hora Argentina
+        await registrarAsistencia(interaction);   // Función con hora Argentina
         break;
 
       case 'ranking':
@@ -235,41 +203,38 @@ client.on(Events.InteractionCreate, async interaction => {
       case 'preguntar':
         const pregunta = interaction.options.getString('pregunta');
         const contexto = getContexto(interaction.guildId, interaction.channel?.name);
-        
+        await interaction.editReply('🤖 Pensando...');
         const response = await anthropic.messages.create({
           model: 'claude-sonnet-4-20250514',
           max_tokens: 1000,
-          messages: [{ role: 'user', content: `${contexto}\n\nPregunta: ${pregunta}` }]
+          messages: [{ role: 'user', content: `${contexto}\n\nPregunta del alumno: ${pregunta}` }]
         });
-
         await interaction.editReply(safe(response.content[0].text));
         darPuntos(interaction.user.id, interaction.member?.displayName || interaction.user.username, 'pregunta');
         break;
 
       case 'herramientas':
-       const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
-       await interaction.editReply(HERRAMIENTAS[materia] || HERRAMIENTAS.iev);
-       break;
+        const materia = detectarMateria(interaction.guildId, interaction.channel?.name);
+        await interaction.editReply(HERRAMIENTAS[materia] || HERRAMIENTAS.iev);
+        break;
+
       case 'ayuda':
         await interaction.editReply('📋 Usa `/ayuda` para ver los comandos disponibles.');
         break;
 
-      // Agregá aquí el resto de tus comandos (/unidad, /tarea, /evento, etc.)
+      // Agregá aquí el resto de tus comandos originales (/unidad, /tarea, /evento, etc.)
       default:
         await interaction.editReply('Comando en desarrollo...');
     }
 
   } catch (error) {
-    } catch (error) {
-      console.error('Error en interacción:', error);
-      if (!interaction.replied && !interaction.deferred) {
-        await interaction.reply({ content: '❌ Ocurrió un error. Intentá de nuevo.', ephemeral: true });
-      }
+    console.error('Error en interacción:', error);
+    if (!interaction.replied && !interaction.deferred) {
+      await interaction.reply({ content: '❌ Ocurrió un error. Intentá de nuevo.', ephemeral: true });
     }
   }
 });
-
-// ====================== LOGIN FINAL ======================
+// ====================== PARTE 5/5 - LOGIN FINAL ======================
 client.login(DISCORD_TOKEN).catch(err => {
   console.error('❌ Error al hacer login:', err);
 });
