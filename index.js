@@ -1216,11 +1216,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
       case 'alumnos': {
         if (!registros.size) { await interaction.editReply('No hay alumnos registrados todavía.'); break; }
         const lista = [...registros.entries()]
-          .map(([uid, r], i) => `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'}) — ${r.carrera||'sin carrera'}`).join('
-');
-        await interaction.editReply(safe(`👥 **Alumnos registrados (${registros.size}):**
-
-${lista}`));
+          .map(([uid, r], i) => `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'}) — ${r.carrera||'sin carrera'}`).join('\n');
+        await interaction.editReply(safe(`👥 **Alumnos registrados (${registros.size}):**\n\n${lista}`));
         break;
       }
     }
