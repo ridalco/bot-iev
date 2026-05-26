@@ -84,7 +84,7 @@ http.createServer((req, res) => {
 // Sobrevive reinicios en Render (si tiene disco persistente)
 // Sin disco, se recarga vacío al reiniciar — comportamiento esperado
 // ════════════════════════════════════════════════════════════════
-const DATA_FILE   = './data.json';
+const DATA_FILE   = '/var/data/data.json'; // disco persistente Render
 const puntos      = new Map(); // userId  → { nombre, pts, entregas, asistencias, preguntas }
 const registros   = new Map(); // userId  → { nombreReal, dni, carrera, registradoEn }
 const tareas      = new Map(); // id      → { titulo, descripcion, fecha, canal, completados: Set }
