@@ -667,39 +667,78 @@ client.once(Events.ClientReady, async (c) => {
 client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
-  // ── FORMULARIO DE ENTREGAS ──
+  // ── FORMULARIO DE ENTREGAS (4 pasos con explicación) ──
   if (msg.channel.name.includes('entrega')) {
     const uid    = msg.author.id;
-    const nombre = msg.member?.displayName || msg.author.username;
+    const nombre = getNombreReal(uid, msg.member?.displayName || msg.author.username);
 
     if (formularioActivo.has(uid)) {
       const form = formularioActivo.get(uid);
       if (Date.now() > form.expira) {
         formularioActivo.delete(uid);
-        await msg.reply('⏰ Tu formulario expiró (10 min). Escribí cualquier cosa para empezar de nuevo.');
+        await msg.reply('⏰ Tu formulario expiró (15 min). Escribí cualquier cosa para empezar de nuevo.');
         return;
       }
       form.expira = Date.now() + FORMULARIO_MS;
-      if (form.paso === 1) { form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form); await msg.reply('📎 **Paso 2/3:** Pegá el link de tu trabajo o adjuntá el archivo.'); return; }
-      if (form.paso === 2) { form.link = msg.content || (msg.attachments.first()?.url||'Sin link'); form.paso = 3; formularioActivo.set(uid, form); await msg.reply('💬 **Paso 3/3:** ¿Algún comentario? (o escribí "listo")'); return; }
+
+      if (form.paso === 1) {
+        form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form);
+        await msg.reply('📎 **Paso 2/4:** Subí tu trabajo\n\nPodés hacer **una o ambas** cosas:\n• Pegá el **link** (GitHub, Drive, etc.)\n• Adjuntá el **archivo** directamente\n\n_Si no tenés link escribí "sin link"._');
+        return;
+      }
+
+      if (form.paso === 2) {
+        const adj = msg.attachments.first();
+        if (adj) { form.link = adj.url; form.archivo = adj.name; form.fileSize = Math.round(adj.size/1024) + ' KB'; }
+        else { form.link = msg.content.toLowerCase() === 'sin link' ? 'Sin link' : msg.content; form.archivo = null; }
+        form.paso = 3; formularioActivo.set(uid, form);
+        await msg.reply('✍️ **Paso 3/4:** Explicá qué hiciste\n\nDescribí con tus palabras:\n• ¿Qué desarrollaste o investigaste?\n• ¿Qué herramientas o conceptos usaste?\n• ¿Qué parte te costó más?\n\n_Esta explicación le permite al bot hacer una corrección mucho más precisa._');
+        return;
+      }
+
       if (form.paso === 3) {
-        form.comentario = msg.content === 'listo' ? '' : msg.content;
+        form.explicacion = msg.content; form.paso = 4; formularioActivo.set(uid, form);
+        await msg.reply('💬 **Paso 4/4 (opcional):** ¿Algún comentario extra o consulta?\n\n_Escribí tu duda o comentario, o escribí "listo" para finalizar._');
+        return;
+      }
+
+      if (form.paso === 4) {
+        form.comentario = msg.content.toLowerCase() === 'listo' ? '' : msg.content;
         formularioActivo.delete(uid);
-        await msg.channel.send(`📋 **ENTREGA REGISTRADA**\n👤 **${form.nombre}**\n📚 ${form.actividad}\n🔗 ${form.link}\n💬 ${form.comentario||'Sin comentario'}`);
-        compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.link} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
+        const archInfo = form.archivo
+          ? `📁 **Archivo:** ${form.archivo} (${form.fileSize})\n🔗 **Link:** ${form.link}`
+          : `🔗 **Link:** ${form.link}`;
+        await msg.channel.send(
+          `📋 **ENTREGA REGISTRADA**\n━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+          `👤 **Alumno:** ${nombre}\n📚 **Actividad:** ${form.actividad}\n${archInfo}\n` +
+          `✍️ **Explicación:** ${form.explicacion.substring(0,200)}${form.explicacion.length>200?'…':''}\n` +
+          `${form.comentario ? `💬 **Comentario:** ${form.comentario}\n` : ''}` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━`
+        );
+        compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.explicacion} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
         const p = darPuntos(uid, nombre, 'entrega');
         await actualizarRol(msg.member, p.pts);
         try {
           await msg.channel.sendTyping();
-          const cor = await corregirEntrega(`Actividad: ${form.actividad}. Link: ${form.link}. Comentario: ${form.comentario}`, msg.guildId, msg.channel?.name);
-          if (cor) await msg.reply(safe(`🤖 **Corrección automática:**\n\n${cor}\n\n*⚠️ Orientativa. La nota final la define el profesor.*\n\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`));
+          const textoCorr = `Actividad: ${form.actividad}\nExplicación del alumno: ${form.explicacion}\n${form.comentario ? `Consulta del alumno: ${form.comentario}` : ''}\n${form.link !== 'Sin link' ? `Link: ${form.link}` : ''}`;
+          const cor = await corregirEntrega(textoCorr, msg.guildId, msg.channel?.name);
+          if (cor) await msg.reply(safe(
+            `🤖 **Corrección de Mentor:**\n\n${cor}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+            `*⚠️ Orientativa. La nota final la define el profesor.*\n` +
+            `📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`
+          ));
         } catch (e) { LOG.error('Error en corrección', e); }
         return;
       }
     }
     if (!formularioActivo.has(uid) && msg.content.length > 2) {
-      formularioActivo.set(uid, { paso: 1, nombre, actividad: '', link: '', comentario: '', expira: Date.now() + FORMULARIO_MS });
-      await msg.reply(`📝 **Formulario de entrega**\n\nHola **${nombre}**!\n\n**Paso 1/3:** ¿Cuál es el nombre de la actividad?\n\n_⏰ Tenés 10 minutos para completarlo._`);
+      formularioActivo.set(uid, { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS });
+      await msg.reply(
+        `📝 **Formulario de entrega — Mentor**\n\nHola **${nombre}**! Registrá tu trabajo en 4 pasos.\n\n` +
+        `**Paso 1/4:** ¿Cuál es el nombre de la actividad o trabajo?\n\n` +
+        `_⏰ Tenés 15 minutos por paso._` +
+        `${!registros.has(uid) ? '\n\n💡 *Tip: usá /registrarme para que tu nombre real aparezca en el registro.*' : ''}`
+      );
     }
   }
 
