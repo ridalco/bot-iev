@@ -1,7 +1,7 @@
 {
-  "name": "bot-iev-mentor",
-  "version": "2.0.0",
-  "description": "Bot de Discord con IA para IES",
+  "name": "bot-mentor-ies",
+  "version": "3.0.0",
+  "description": "Bot Mentor — IES N°6 / IES N°11 — Prof. Ing. Corimayo Ricardo Daniel",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -10,8 +10,7 @@
     "@anthropic-ai/sdk": "^0.20.0",
     "discord.js": "^14.18.0",
     "dotenv": "^16.4.5",
-    "googleapis": "^171.4.0",
-    "chalk": "^5.3.0"
+    "googleapis": "^171.4.0"
   },
   "engines": {
     "node": ">=20"
