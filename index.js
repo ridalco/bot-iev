@@ -629,12 +629,54 @@ async function iniciarClase(channel, titulo, guildId) {
   const s = getSesion(guildId);
   if (s.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return; }
   s.activa = true; s.asistentes = new Map(); s.preguntas = []; s.fecha = fechaAR();
+  s.titulo = titulo || 'Clase de hoy';
+
+  const guild = client.guilds.cache.get(guildId);
+  const guildName = guild?.name || guildId;
+
+  // Generar link GPS único para esta clase (expira en 20 minutos)
+  const linkGPS = generarLinkPresencia(guildId, guildName, s.titulo, 'ALUMNO', '');
+  const linkBase = linkGPS.split('?')[0];
+  const linkParams = linkGPS.split('?')[1].replace(/uid=ALUMNO/, 'uid=');
+
+  s.linkBase   = linkBase;
+  s.linkParams = linkParams;
+  s.tokenTs    = Date.now();
+
   await channel.send({
-    content: `📋 **ASISTENCIA — ${titulo || 'Clase de hoy'}**\n📅 **${s.fecha}** | 🕐 **${horaAR()}**\n\nHacé clic para registrar tu presencia.`,
+    content:
+      `📋 **ASISTENCIA — ${s.titulo}**\n` +
+      `📅 **${s.fecha}** | 🕐 **${horaAR()}** | ⏰ Expira en **20 minutos**\n\n` +
+      `**Para registrar tu presencia:**\n` +
+      `1️⃣ Abrí el link desde tu celular o PC del colegio\n` +
+      `2️⃣ Activá la ubicación cuando el navegador lo pida\n` +
+      `3️⃣ Si estás en el instituto, se registra automáticamente\n\n` +
+      `🔒 *El sistema verifica que estés a menos de 15 metros del instituto.*`,
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('presente').setLabel('✅  Marcar presencia').setStyle(ButtonStyle.Success)
+      new ButtonBuilder().setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Link).setURL(`${linkBase}?${linkParams.replace('uid=', 'uid=__UID__')}`),
+      new ButtonBuilder().setCustomId('presente').setLabel('✅ Presente (sin GPS)').setStyle(ButtonStyle.Secondary)
     )]
   });
+
+  // Auto-cerrar link a los 20 minutos
+  setTimeout(async () => {
+    const sesActual = getSesion(guildId);
+    if (sesActual.activa && sesActual.tokenTs === s.tokenTs) {
+      await channel.send('⏰ **El link de asistencia expiró.** El profesor puede usar `/cerrar-clase` para ver el resumen.').catch(()=>{});
+    }
+  }, 20 * 60 * 1000);
+}
+
+// ════════════════════════════════════════════════════════════════
+// LINK DE PRESENCIA GPS
+// ════════════════════════════════════════════════════════════════
+function generarLinkPresencia(guildId, guildName, titulo, userId, nombreReal) {
+  const token   = `${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+  const base    = 'https://aulasvirtuales.name/presencia.html';
+  const guild   = encodeURIComponent(guildName || guildId);
+  const clase   = encodeURIComponent(titulo || 'Clase');
+  const nombre  = encodeURIComponent(nombreReal || '');
+  return `${base}?token=${token}&uid=${userId}&guild=${guild}&clase=${clase}&nombre=${nombre}`;
 }
 
 // ════════════════════════════════════════════════════════════════
