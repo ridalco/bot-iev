@@ -628,8 +628,13 @@ async function corregirEntrega(texto, gid, ch) {
 async function iniciarClase(channel, titulo, guildId) {
   const s = getSesion(guildId);
   if (s.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return; }
-  s.activa = true; s.asistentes = new Map(); s.preguntas = []; s.fecha = fechaAR();
-  s.titulo = titulo || 'Clase de hoy';
+  s.activa    = true;
+  s.asistentes = new Map();
+  s.preguntas  = [];
+  s.fecha      = fechaAR();
+  s.titulo     = titulo || 'Clase de hoy';
+  // Código secreto de 4 dígitos para presencia sin GPS
+  s.codigoClase = Math.floor(1000 + Math.random() * 9000).toString();
 
   const guild = client.guilds.cache.get(guildId);
   const guildName = guild?.name || guildId;
@@ -651,7 +656,8 @@ async function iniciarClase(channel, titulo, guildId) {
       `1️⃣ Abrí el link desde tu celular o PC del colegio\n` +
       `2️⃣ Activá la ubicación cuando el navegador lo pida\n` +
       `3️⃣ Si estás en el instituto, se registra automáticamente\n\n` +
-      `🔒 *El sistema verifica que estés a menos de 15 metros del instituto.*`,
+      `🔒 *El sistema verifica que estés a menos de 15 metros del instituto.*\n\n` +
+      `🔑 **Código para presencia sin GPS: \`${s.codigoClase}\`** ← escribilo en el pizarrón`,
     components: [new ActionRowBuilder().addComponents(
       new ButtonBuilder().setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Link).setURL(`${linkBase}?${linkParams.replace('uid=', 'uid=__UID__')}`),
       new ButtonBuilder().setCustomId('presente').setLabel('✅ Presente (sin GPS)').setStyle(ButtonStyle.Secondary)
@@ -727,6 +733,9 @@ const commands = [
   new SlashCommandBuilder().setName('misnota').setDescription('Consultar tus notas en Moodle').addStringOption(o => o.setName('nombre').setDescription('Tu nombre completo en Moodle').setRequired(true)),
   new SlashCommandBuilder().setName('actividades').setDescription('Ver actividades de un curso Moodle').addIntegerOption(o => o.setName('curso').setDescription('ID del curso (usá /miscursos)').setRequired(true)),
   new SlashCommandBuilder().setName('materia').setDescription('Ver qué materia detecta el bot en este canal'),
+  new SlashCommandBuilder().setName('codigo')
+    .setDescription('Registrar presencia con el código del pizarrón (alternativa al GPS)')
+    .addStringOption(o => o.setName('valor').setDescription('Código de 4 dígitos del pizarrón').setRequired(true).setMinLength(4).setMaxLength(4)),
   new SlashCommandBuilder().setName('registrarme')
     .setDescription('Registrá tu nombre real para que aparezca en la asistencia')
     .addStringOption(o => o.setName('nombre').setDescription('Tu nombre y apellido completo').setRequired(true))
@@ -1417,6 +1426,31 @@ client.on(Events.InteractionCreate, async (interaction) => {
         for (const [act, lista] of entregasPorActiv.entries())
           msg += `📚 **${act}** — ${lista.length} entrega${lista.length!==1?'s':''}\n${lista.map(e=>`  · ${e.nombre} (${e.hora})`).join('\n')}\n\n`;
         await interaction.editReply(safe(msg));
+        break;
+      }
+
+      case 'codigo': {
+        const sesion  = getSesion(interaction.guildId);
+        if (!sesion.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
+        const uid     = interaction.user.id;
+        const nombre  = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+        if (sesion.asistentes.has(uid)) { await interaction.editReply(`✅ **${nombre}**, ya registraste tu presencia.`); break; }
+        const valorIngresado = interaction.options.getString('valor');
+        if (valorIngresado !== sesion.codigoClase) {
+          await interaction.editReply(`❌ **Código incorrecto.** Verificá el código en el pizarrón e intentá de nuevo.`);
+          break;
+        }
+        // Código correcto — registrar presencia
+        const hora = horaAR();
+        sesion.asistentes.set(uid, { nombre, hora, metodo: 'codigo' });
+        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+        await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+        const p   = darPuntos(uid, nombre, 'asistencia');
+        const rol = getRol(p.pts);
+        await actualizarRol(interaction.member, p.pts);
+        const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
+        const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 **Logro: ${l.emoji} ${l.nombre}**` : ''; }).join('\n') : '';
+        await interaction.editReply(`✅ **${nombre}** — presencia registrada con código a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**${logroTxt}\n\n*📋 Registrada con código del pizarrón*`);
         break;
       }
 
