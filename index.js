@@ -894,14 +894,14 @@ client.on(Events.MessageCreate, async (msg) => {
       const form = formularioActivo.get(uid);
       if (Date.now() > form.expira) {
         formularioActivo.delete(uid);
-        await msg.reply('⏰ Tu formulario expiró (15 min). Escribí cualquier cosa para empezar de nuevo.');
+        await msg.reply('Se venció el tiempo del formulario. Escribí de nuevo para arrancar.');
         return;
       }
       form.expira = Date.now() + FORMULARIO_MS;
 
       if (form.paso === 1) {
         form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form);
-        await msg.reply('📎 **Paso 2/4:** Subí tu trabajo\n\nPodés hacer **una o ambas** cosas:\n• Pegá el **link** (GitHub, Drive, etc.)\n• Adjuntá el **archivo** directamente\n\n_Si no tenés link escribí "sin link"._');
+        await msg.reply('📎 **Paso 2 de 4** — ¿Dónde está el trabajo?\n\nPegá el link (GitHub, Drive...) o adjuntá el archivo acá.\nSi no tenés link, escribí `sin link`.');
         return;
       }
 
@@ -910,13 +910,13 @@ client.on(Events.MessageCreate, async (msg) => {
         if (adj) { form.link = adj.url; form.archivo = adj.name; form.fileSize = Math.round(adj.size/1024) + ' KB'; }
         else { form.link = msg.content.toLowerCase() === 'sin link' ? 'Sin link' : msg.content; form.archivo = null; }
         form.paso = 3; formularioActivo.set(uid, form);
-        await msg.reply('✍️ **Paso 3/4:** Explicá qué hiciste\n\nDescribí con tus palabras:\n• ¿Qué desarrollaste o investigaste?\n• ¿Qué herramientas o conceptos usaste?\n• ¿Qué parte te costó más?\n\n_Esta explicación le permite al bot hacer una corrección mucho más precisa._');
+        await msg.reply('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
         return;
       }
 
       if (form.paso === 3) {
         form.explicacion = msg.content; form.paso = 4; formularioActivo.set(uid, form);
-        await msg.reply('💬 **Paso 4/4 (opcional):** ¿Algún comentario extra o consulta?\n\n_Escribí tu duda o comentario, o escribí "listo" para finalizar._');
+        await msg.reply('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
         return;
       }
 
@@ -956,10 +956,8 @@ client.on(Events.MessageCreate, async (msg) => {
     if (!formularioActivo.has(uid) && msg.content.length > 2) {
       formularioActivo.set(uid, { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS });
       await msg.reply(
-        `📝 **Formulario de entrega — Mentor**\n\nHola **${nombre}**! Registrá tu trabajo en 4 pasos.\n\n` +
-        `**Paso 1/4:** ¿Cuál es el nombre de la actividad o trabajo?\n\n` +
-        `_⏰ Tenés 15 minutos por paso._` +
-        `${!registros.has(uid) ? '\n\n💡 *Tip: usá /registrarme para que tu nombre real aparezca en el registro.*' : ''}`
+        `📝 Hola **${nombre}**\n\n**Paso 1 de 4** — ¿Cómo se llama la actividad o trabajo?` +
+        `${!registros.has(uid) ? '\n\n💡 Con /registrarme podés poner tu nombre real en el registro.' : ''}`
       );
     }
   }
@@ -989,8 +987,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
     const uid     = interaction.user.id;
     const nombre  = interaction.member?.displayName || interaction.user.username;
     const enc     = encuestas.get(interaction.guildId);
-    if (!enc) { await interaction.reply({ content: 'Esta encuesta ya cerró.', ephemeral: true }); return; }
-    if (Date.now() > enc.cierra) { await interaction.reply({ content: '⏰ La encuesta cerró.', ephemeral: true }); return; }
+    if (!enc) { await interaction.reply({ content: 'Esta encuesta ya terminó.', ephemeral: true }); return; }
+    if (Date.now() > enc.cierra) { await interaction.reply({ content: 'Ya no se puede votar, la encuesta terminó.', ephemeral: true }); return; }
     const yaVoto  = enc.votos.has(uid);
     enc.votos.set(uid, idx);
     const total   = enc.votos.size;
@@ -1013,8 +1011,8 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     const resp   = interaction.customId.split('_')[1];
     const uid    = interaction.user.id;
     const nombre = interaction.member?.displayName || interaction.user.username;
-    if (!torneoActivo) { await interaction.reply({ content: 'El torneo ya cerró.', ephemeral: true }); return; }
-    if (torneoActivo.respuestas.has(uid)) { await interaction.reply({ content: `✅ Ya respondiste.`, ephemeral: true }); return; }
+    if (!torneoActivo) { await interaction.reply({ content: 'Esta pregunta ya cerró.', ephemeral: true }); return; }
+    if (torneoActivo.respuestas.has(uid)) { await interaction.reply({ content: `Ya enviaste tu respuesta.`, ephemeral: true }); return; }
     torneoActivo.respuestas.set(uid, { resp, nombre, tiempo: Date.now() });
     const esCorrecta = resp === torneoActivo.correcta;
     await interaction.reply({ content: esCorrecta ? `✅ **Correcto!** Registrado — esperá el resultado.` : `❌ Incorrecto. Esperá el resultado.`, ephemeral: true });
@@ -1025,10 +1023,10 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
   if (interaction.isButton() && interaction.customId.startsWith('quiz_')) {
     const [, resp, tuid] = interaction.customId.split('_');
     const uid = interaction.user.id;
-    if (uid !== tuid)  { await interaction.reply({ content: '⚠️ Este quiz no es tuyo. Usá /quiz para el tuyo.', ephemeral: true }); return; }
+    if (uid !== tuid)  { await interaction.reply({ content: 'Este quiz es de otro alumno. Usá /quiz para el tuyo.', ephemeral: true }); return; }
     const quiz = quizActivo.get(uid);
-    if (!quiz)          { await interaction.reply({ content: '⚠️ Usá /quiz para empezar.', ephemeral: true }); return; }
-    if (quiz.respondido){ await interaction.reply({ content: '✅ Ya respondiste. Usá /quiz para otra pregunta.', ephemeral: true }); return; }
+    if (!quiz)          { await interaction.reply({ content: 'Usá /quiz para generar una pregunta.', ephemeral: true }); return; }
+    if (quiz.respondido){ await interaction.reply({ content: 'Ya respondiste esta pregunta. Usá /quiz para una nueva.', ephemeral: true }); return; }
     quiz.respondido = true; quizActivo.set(uid, quiz);
     const nombre = interaction.member?.displayName || interaction.user.username;
     let msg;
@@ -1073,11 +1071,11 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
   // ── BOTÓN: Presente ──
   if (interaction.isButton() && interaction.customId === 'presente') {
     const sesion = getSesion(interaction.guildId);
-    if (!sesion.activa) { await interaction.reply({ content: '⚠️ La clase ya cerró.', ephemeral: true }); return; }
+    if (!sesion.activa) { await interaction.reply({ content: 'La clase ya terminó, no se puede registrar presencia.', ephemeral: true }); return; }
     const uid    = interaction.user.id;
     const discordNombre = interaction.member?.displayName || interaction.user.username;
     const nombre = getNombreReal(uid, discordNombre); // usa nombre real si está registrado
-    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: `✅ **${nombre}**, ya registraste tu presencia.`, ephemeral: true }); return; }
+    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: `${nombre}, ya marcaste presente.`, ephemeral: true }); return; }
     const hora = horaAR();
     sesion.asistentes.set(uid, { nombre, hora });
     const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
@@ -1099,7 +1097,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
   // Verificar permisos de profesor
   if (SOLO_PROFESOR.has(interaction.commandName) && !esProfesor(interaction.user.id)) {
-    await interaction.editReply('❌ Este comando es solo para el profesor.'); return;
+    await interaction.editReply('Este comando es solo para el profesor.'); return;
   }
 
   LOG.cmd(`${interaction.user.username} usó /${interaction.commandName} en ${interaction.guild?.name}`);
@@ -1146,12 +1144,12 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'iniciar-clase':
         await iniciarClase(interaction.channel, interaction.options.getString('titulo')||'Clase de hoy', interaction.guildId);
-        await interaction.editReply('✅ Clase iniciada.');
+        await interaction.editReply('Clase iniciada. Los alumnos ya pueden marcar presencia.');
         break;
 
       case 'cerrar-clase': {
         const s = getSesion(interaction.guildId);
-        if (!s.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
+        if (!s.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
         s.activa = false;
         const lista   = [...s.asistentes.values()];
         const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${a.metodo === 'codigo' ? ' *(código)*' : ''}`).join('\n') : 'Sin presentes.';
@@ -1198,7 +1196,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'noticias':
-        await interaction.editReply('📰 Generando noticias...');
+        await interaction.editReply('Generando noticias, ya vuelvo...');
         publicarNoticias(interaction.guild).then(()=>interaction.editReply('📰 ¡Publicadas en #noticias-tech!')).catch(()=>interaction.editReply('❌ Error.'));
         break;
 
@@ -1218,7 +1216,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'preguntar': {
         const uid    = interaction.user.id;
         const espera = checkCooldown(uid);
-        if (espera > 0) { await interaction.editReply(`⏳ Esperá ${espera} segundos antes de otra pregunta.`); break; }
+        if (espera > 0) { await interaction.editReply(`Esperá ${espera} segundo${espera!==1?'s':''} antes de hacer otra pregunta.`); break; }
         const pregunta = interaction.options.getString('pregunta');
         // Verificar caché primero
         const cacheKey = getContexto(interaction.guildId, interaction.channel?.name).substring(0,30) + pregunta;
@@ -1234,7 +1232,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const s = getSesion(interaction.guildId);
         if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: nombre });
         const logroMsg = nuevosL.length ? '\n\n' + nuevosL.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 **¡Logro desbloqueado! ${l.emoji} ${l.nombre}** (+${l.pts} pts)` : ''; }).join('\n') : '';
-        await interaction.editReply(safe(`🤖 **Respuesta:**\n\n${respText}\n\n💡 +5 pts${logroMsg}`));
+        await interaction.editReply(safe(`${respText}\n\n+5 pts${logroMsg}`));
         break;
       }
 
@@ -1249,7 +1247,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'mispuntos': {
         const uid    = interaction.user.id;
         const nombre = interaction.member?.displayName || interaction.user.username;
-        if (!puntos.has(uid)) { await interaction.editReply('Todavía no tenés puntos. ¡Participá en clase!'); break; }
+        if (!puntos.has(uid)) { await interaction.editReply('Todavía no tenés puntos. Marcá presencia o hacé una pregunta para empezar.'); break; }
         const p    = puntos.get(uid);
         const rol  = getRol(p.pts);
         const pos  = getPosicion(uid);
@@ -1261,7 +1259,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'entrega':
-        await interaction.editReply('📤 **Cómo entregar:**\n\n1. Andá al canal **#entregas** (o #entregas-bd, #entregas-practica, etc.)\n2. Escribí cualquier cosa para iniciar el formulario\n3. Seguí los 3 pasos\n4. La IA corrige automáticamente\n5. El profesor confirma la nota\n\n⚠️ No se aceptan entregas por WhatsApp ni privado.');
+        await interaction.editReply('Para entregar un trabajo:\n\n1. Andá al canal **#entregas** de tu materia\n2. Escribí cualquier mensaje para abrir el formulario\n3. Seguí los 4 pasos\n4. Recibirás una corrección automática como orientación\n\nNo se aceptan entregas por WhatsApp o mensajes privados.');
         break;
 
       case 'herramientas':
@@ -1279,7 +1277,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const mc = getMC(interaction.guild?.name);
         if (!mc.token) { await interaction.editReply(`❌ Token no configurado para ${mc.nombre}`); break; }
         const c = await getCursos(mc.url, mc.token);
-        if (!c)        { await interaction.editReply(`❌ Sin conexión con ${mc.url}`); break; }
+        if (!c)        { await interaction.editReply(`No se pudo conectar con Moodle ${mc.nombre}. Intentá más tarde.`); break; }
         if (c._error)  { await interaction.editReply(`❌ Error Moodle: ${c._error}`); break; }
         await interaction.editReply(`✅ Moodle **${mc.nombre}** conectado — ${Array.isArray(c)?c.length:0} cursos`);
         break;
@@ -1290,7 +1288,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const c  = await getCursos(mc.url, mc.token);
         if (!Array.isArray(c)) { await interaction.editReply('❌ No se pudo obtener los cursos.'); break; }
         const act = c.filter(x => x.visible===1 && x.id>1);
-        if (!act.length) { await interaction.editReply('No hay cursos activos.'); break; }
+        if (!act.length) { await interaction.editReply('No hay cursos activos en este momento.'); break; }
         await interaction.editReply(`📚 **Cursos Moodle ${mc.nombre}:**\n\n${act.slice(0,15).map(x=>`#${x.id} — ${x.fullname}`).join('\n')}\n\nUsá /actividades curso:[id]`);
         break;
       }
@@ -1306,7 +1304,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           msg += `\n**${s.name}:**\n`;
           for (const m of s.modules.slice(0,5)) { msg += `  • ${m.name} (${m.modname})\n`; tot++; }
         }
-        await interaction.editReply(tot ? safe(msg) : 'No hay actividades.');
+        await interaction.editReply(tot ? safe(msg) : 'No se encontraron actividades en este curso.');
         break;
       }
 
@@ -1496,13 +1494,13 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'codigo': {
         const sesion  = getSesion(interaction.guildId);
-        if (!sesion.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
+        if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
         const uid     = interaction.user.id;
         const nombre  = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
-        if (sesion.asistentes.has(uid)) { await interaction.editReply(`✅ **${nombre}**, ya registraste tu presencia.`); break; }
+        if (sesion.asistentes.has(uid)) { await interaction.editReply(`${nombre}, ya marcaste presente.`); break; }
         const valorIngresado = interaction.options.getString('valor');
         if (valorIngresado !== sesion.codigoClase) {
-          await interaction.editReply(`❌ **Código incorrecto.** Verificá el código en el pizarrón e intentá de nuevo.`);
+          await interaction.editReply(`Código incorrecto. Fijate en el pizarrón e intentá de nuevo.`);
           break;
         }
         // Código correcto — registrar presencia
@@ -1522,7 +1520,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       // ── QR DE ASISTENCIA ──
       case 'qr-clase': {
         const s = getSesion(interaction.guildId);
-        if (!s.activa) { await interaction.editReply('⚠️ Primero iniciá la clase con /iniciar-clase.'); break; }
+        if (!s.activa) { await interaction.editReply('Primero iniciá la clase con /iniciar-clase para generar el QR.'); break; }
         const guild      = interaction.guild;
         const guildName  = encodeURIComponent(guild?.name || interaction.guildId);
         const titulo     = encodeURIComponent(s.titulo || 'Clase');
@@ -1642,7 +1640,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'backup':
-        await interaction.editReply('💾 Guardando en Google Sheets...');
+        await interaction.editReply('Guardando en Google Sheets...');
         await backupPuntos();
         await interaction.editReply(`✅ Backup completado — ${puntos.size} alumnos guardados.`);
         break;
@@ -1672,7 +1670,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const nombre = targetUser ? targetUser.username : (interaction.member?.displayName || interaction.user.username);
         if (targetUser && !esProfesor(interaction.user.id)) { await interaction.editReply('❌ Solo el profesor puede ver el historial de otros alumnos.'); break; }
         const hist  = historial.get(uid);
-        if (!hist || !hist.length) { await interaction.editReply(`No hay entregas registradas para **${nombre}** todavía.`); break; }
+        if (!hist || !hist.length) { await interaction.editReply(`${nombre} todavía no tiene entregas registradas.`); break; }
         const lista = hist.slice(-10).reverse().map((h, i) =>
           `**${i+1}. ${h.actividad}** · ${h.fecha}\n🔗 ${h.link}\n✍️ ${h.explicacion.substring(0,100)}${h.explicacion.length>100?'…':''}`
         ).join('\n\n');
@@ -1731,7 +1729,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'riesgo': {
         const riesgo = detectarAlumnosEnRiesgo();
-        if (!riesgo.length) { await interaction.editReply('✅ No hay alumnos en riesgo. ¡Todos tienen buena actividad!'); break; }
+        if (!riesgo.length) { await interaction.editReply('Por ahora todos tienen buena actividad, nadie está en riesgo.'); break; }
         const lista = riesgo.map((r,i) =>
           `${i+1}. **${r.nombre}** — ${r.asistencias} asistencia${r.asistencias!==1?'s':''} · ${r.entregas} entrega${r.entregas!==1?'s':''} · ${r.pts} pts`
         ).join('\n');
@@ -1745,7 +1743,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'torneo': {
-        if (torneoActivo) { await interaction.editReply('⚠️ Ya hay un torneo activo. Esperá que termine la pregunta actual.'); break; }
+        if (torneoActivo) { await interaction.editReply('Ya hay una pregunta activa. Esperá que cierre antes de lanzar otra.'); break; }
         await interaction.editReply('🏆 Iniciando torneo... Generando primera pregunta.');
         const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
         const ctx  = CONTEXTOS[mat] || CONTEXTOS.iev;
@@ -1831,7 +1829,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     }
   } catch (e) {
     LOG.error(`Error en /${interaction.commandName}`, e);
-    try { await interaction.editReply('❌ Error inesperado. Intentá de nuevo.'); } catch {}
+    try { await interaction.editReply('Algo salió mal. Podés intentar de nuevo o avisarle al profesor.'); } catch {}
   }
 });
 
@@ -1843,8 +1841,8 @@ client.on(Events.GuildMemberAdd, async (member) => {
   const es11    = member.guild.name.toLowerCase().includes('11');
   if (!canal) return;
   await canal.send(es11
-    ? `👋 ¡Bienvenido/a **${member.displayName}** al IES N°11!\n\n📚 Tecnicatura en Desarrollo de Software\n• **/preguntar** — consultá BD o Informática con IA\n• **/quiz** — practicá interactivamente\n• **#entregas** — entregá y la IA corrige\n• **/ayuda** — todos los comandos`
-    : `👋 ¡Bienvenido/a **${member.displayName}** al IES N°6!\n\n📚 Materias:\n• 🌐 IEV → #iev\n• 🎯 PP3 → #practica\n• ☕ PyBD → #pybd\n\n• **#entregas** — entregá y el bot corrige\n• **/ayuda** — todos los comandos\n• 📰 Noticias tech en **#noticias-tech**`
+    ? `Bienvenido/a **${member.displayName}** al IES N°11 👋\n\n📚 Tecnicatura en Desarrollo de Software\n\nComandos para arrancar:\n• /preguntar — preguntale algo a la IA sobre BD o Informática\n• /quiz — practicá con preguntas interactivas\n• #entregas — entregá un trabajo y recibís corrección\n• /ayuda — todos los comandos disponibles`
+    : `Bienvenido/a **${member.displayName}** al IES N°6 👋\n\n📚 Materias:\n• 🌐 IEV → #iev\n• 🎯 PP3 → #practica\n• ☕ PyBD → #pybd\n\nComandos para arrancar:\n• /ayuda — todos los comandos disponibles\n• #entregas — entregá un trabajo y recibís corrección automática\n• #noticias-tech — noticias de tecnología todos los días`
   );
 });
 
