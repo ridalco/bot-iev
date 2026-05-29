@@ -96,6 +96,7 @@ const cacheIA     = new Map(); // hash    → { respuesta, expira }
 let tareaCounter  = 1;
 let eventoCounter = 1;
 let torneoActivo  = null; // { pregunta, opciones, correcta, respuestas: Map, cierra: timestamp }
+const encuestas   = new Map(); // guildId → { pregunta, opciones, votos: Map, cierra, msgId, canal }
 
 function cargarDatos() {
   try {
@@ -187,7 +188,7 @@ function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
 const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
-  'rubrica','generar-parcial','riesgo','torneo'
+  'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -759,6 +760,15 @@ const commands = [
   new SlashCommandBuilder().setName('riesgo').setDescription('👨‍🏫 Ver alumnos con baja asistencia'),
   new SlashCommandBuilder().setName('torneo').setDescription('👨‍🏫 Iniciar torneo de quizzes entre todos'),
   new SlashCommandBuilder().setName('logros').setDescription('👨‍🏫 Ver todos los logros disponibles'),
+  new SlashCommandBuilder().setName('qr-clase').setDescription('👨‍🏫 Generar QR de asistencia para proyectar'),
+  new SlashCommandBuilder().setName('encuesta')
+    .setDescription('👨‍🏫 Lanzar encuesta en vivo durante la clase')
+    .addStringOption(o => o.setName('pregunta').setDescription('¿Qué querés preguntar?').setRequired(true))
+    .addStringOption(o => o.setName('opciones').setDescription('Opciones separadas por | (ej: Sí la entendí|Más o menos|No entendí)').setRequired(true))
+    .addIntegerOption(o => o.setName('minutos').setDescription('Minutos para votar (default: 2)').setRequired(false).setMinValue(1).setMaxValue(10)),
+  new SlashCommandBuilder().setName('perfil')
+    .setDescription('Ver perfil académico completo')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno a consultar (solo profesor). Dejá vacío para el tuyo.').setRequired(false)),
 ];
 
 async function registrarComandos(guildId) {
@@ -973,6 +983,31 @@ client.on(Events.MessageCreate, async (msg) => {
 // ════════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
 
+  // ── BOTÓN: Encuesta ──
+  if (interaction.isButton() && interaction.customId.startsWith('enc_')) {
+    const idx     = parseInt(interaction.customId.split('_')[1]);
+    const uid     = interaction.user.id;
+    const nombre  = interaction.member?.displayName || interaction.user.username;
+    const enc     = encuestas.get(interaction.guildId);
+    if (!enc) { await interaction.reply({ content: 'Esta encuesta ya cerró.', ephemeral: true }); return; }
+    if (Date.now() > enc.cierra) { await interaction.reply({ content: '⏰ La encuesta cerró.', ephemeral: true }); return; }
+    const yaVoto  = enc.votos.has(uid);
+    enc.votos.set(uid, idx);
+    const total   = enc.votos.size;
+    const conteo  = {};
+    for (const v of enc.votos.values()) conteo[v] = (conteo[v]||0)+1;
+    const emojis  = ['🔵','🟢','🟡','🟠','🔴'];
+    const resumen = enc.opciones.map((op,i) => {
+      const cnt = conteo[i]||0;
+      const pct = total > 0 ? Math.round(cnt/total*100) : 0;
+      return `${emojis[i]} ${op}: **${cnt}** (${pct}%)`;
+    }).join(' · ');
+    await interaction.reply({ content: `${yaVoto ? '🔄 Voto actualizado' : '✅ Voto registrado'}: **${enc.opciones[idx]}**
+
+${resumen} · Total: **${total}**`, ephemeral: true });
+    return;
+  }
+
   // ── BOTÓN: Torneo ──
   if (interaction.isButton() && interaction.customId.startsWith('torneo_')) {
     const resp   = interaction.customId.split('_')[1];
@@ -1119,8 +1154,38 @@ client.on(Events.InteractionCreate, async (interaction) => {
         if (!s.activa) { await interaction.editReply('⚠️ No hay clase activa.'); break; }
         s.activa = false;
         const lista   = [...s.asistentes.values()];
-        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}`).join('\n') : 'Sin presentes.';
-        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes**\n\n${resumen}\n\n📊 Guardado en Google Sheets.`));
+        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${a.metodo === 'codigo' ? ' *(código)*' : ''}`).join('\n') : 'Sin presentes.';
+        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes**\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n\n⏳ Generando resumen de clase con IA...`));
+
+        // Generar resumen automático con IA si hubo preguntas
+        try {
+          const pregsTexto = s.preguntas.length
+            ? s.preguntas.map(p => `- ${p.autor}: "${p.pregunta}"`).join('\n')
+            : null;
+          const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+          if (pregsTexto) {
+            const r = await llamarIA({
+              model: 'claude-sonnet-4-20250514', max_tokens: 800,
+              messages: [{ role: 'user', content:
+                `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nAnalizá las preguntas que hicieron los alumnos durante la clase de hoy y generá un resumen pedagógico para el profesor.\n\nPREGUNTAS DE LOS ALUMNOS:\n${pregsTexto}\n\nGenerá:\n📌 **Temas más consultados:** [lista de temas con mayor interés]\n💡 **Conceptos a reforzar:** [donde hubo más dudas]\n✅ **Lo que quedó claro:** [temas bien comprendidos]\n📚 **Recomendación para próxima clase:** [qué repasar o profundizar]\n\nSé concreto y pedagógico.`
+              }]
+            });
+            const resumenIA = r.content[0].text;
+
+            // Publicar en el canal
+            await interaction.channel.send(safe(`🤖 **RESUMEN DE LA CLASE — ${s.fecha}**\n${interaction.guild?.name}\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${resumenIA}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n👥 Presentes: ${lista.length} | 💬 Preguntas: ${s.preguntas.length}\n*Mentor 🎓 — Resumen automático*`));
+
+            // DM al profesor
+            if (PROFESOR_ID) {
+              try {
+                const prof = await interaction.client.users.fetch(PROFESOR_ID);
+                await prof.send(safe(`📊 **Resumen de clase — ${s.titulo || 'Clase'}**\n${interaction.guild?.name} · ${s.fecha}\n\n${resumenIA}\n\n👥 ${lista.length} presentes · 💬 ${s.preguntas.length} preguntas`));
+              } catch {}
+            }
+          } else {
+            await interaction.channel.send(`📋 **Clase cerrada** — ${s.fecha}\n👥 ${lista.length} presentes | Sin preguntas registradas hoy.`);
+          }
+        } catch (e) { LOG.error('Error resumen IA', e); }
         break;
       }
 
@@ -1451,6 +1516,128 @@ client.on(Events.InteractionCreate, async (interaction) => {
         const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
         const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 **Logro: ${l.emoji} ${l.nombre}**` : ''; }).join('\n') : '';
         await interaction.editReply(`✅ **${nombre}** — presencia registrada con código a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**${logroTxt}\n\n*📋 Registrada con código del pizarrón*`);
+        break;
+      }
+
+      // ── QR DE ASISTENCIA ──
+      case 'qr-clase': {
+        const s = getSesion(interaction.guildId);
+        if (!s.activa) { await interaction.editReply('⚠️ Primero iniciá la clase con /iniciar-clase.'); break; }
+        const guild      = interaction.guild;
+        const guildName  = encodeURIComponent(guild?.name || interaction.guildId);
+        const titulo     = encodeURIComponent(s.titulo || 'Clase');
+        const tokenTs    = s.tokenTs || Date.now();
+        const token      = `${tokenTs}_${Math.random().toString(36).substring(2,8)}`;
+        const linkPresencia = `https://aulasvirtuales.name/presencia.html?token=${token}&uid=__UID__&guild=${guildName}&clase=${titulo}`;
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(linkPresencia)}&size=400x400&margin=20&bgcolor=ffffff&color=1e40af`;
+        const embed = {
+          title: `📱 QR de Asistencia — ${s.titulo || 'Clase de hoy'}`,
+          description:
+            `**Proyectá este QR en el aula**\n\n` +
+            `Los alumnos lo escanean con la cámara del celular.\n` +
+            `Se verifica que estén a menos de **15 metros** del instituto.\n\n` +
+            `⏰ Expira en **20 minutos** · 📅 ${s.fecha}\n\n` +
+            `*También pueden usar el link directo del mensaje de clase.*`,
+          color: 0x1e40af,
+          image: { url: qrUrl },
+          footer: { text: `Mentor 🎓 · ${guild?.name || ''}` }
+        };
+        await interaction.editReply({ content: '📱 **QR generado — proyectalo en el aula:**', embeds: [embed] });
+        break;
+      }
+
+      // ── ENCUESTA EN VIVO ──
+      case 'encuesta': {
+        const pregunta = interaction.options.getString('pregunta');
+        const optsRaw  = interaction.options.getString('opciones');
+        const minutos  = interaction.options.getInteger('minutos') || 2;
+        const opciones = optsRaw.split('|').map(o => o.trim()).filter(Boolean).slice(0, 5);
+        if (opciones.length < 2) { await interaction.editReply('❌ Necesitás al menos 2 opciones separadas por |'); break; }
+        const guildId  = interaction.guildId;
+        const cierra   = Date.now() + minutos * 60000;
+        encuestas.set(guildId, { pregunta, opciones, votos: new Map(), cierra, msgId: null, canal: interaction.channelId });
+        const emojis   = ['🔵','🟢','🟡','🟠','🔴'];
+        const botones  = new ActionRowBuilder().addComponents(
+          ...opciones.map((op, i) => new ButtonBuilder().setCustomId(`enc_${i}`).setLabel(`${emojis[i]} ${op.substring(0,60)}`).setStyle(ButtonStyle.Secondary))
+        );
+        await interaction.editReply({
+          content: safe(
+            `🗳️ **ENCUESTA EN VIVO**\n` +
+            `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+            `**${pregunta}**\n\n` +
+            `${opciones.map((op, i) => `${emojis[i]} ${op}`).join('\n')}\n\n` +
+            `⏰ Cerrá en ${minutos} minuto${minutos > 1 ? 's' : ''} · Votá haciendo clic:`
+          ),
+          components: [botones]
+        });
+        const msg = await interaction.fetchReply();
+        const enc = encuestas.get(guildId);
+        if (enc) enc.msgId = msg.id;
+
+        // Auto-cerrar y mostrar resultados
+        setTimeout(async () => {
+          const enc = encuestas.get(guildId);
+          if (!enc) return;
+          encuestas.delete(guildId);
+          const total = enc.votos.size;
+          const conteo = {};
+          for (const v of enc.votos.values()) conteo[v] = (conteo[v]||0) + 1;
+          const barras = enc.opciones.map((op, i) => {
+            const cnt  = conteo[i] || 0;
+            const pct  = total > 0 ? Math.round(cnt/total*100) : 0;
+            const bar  = '█'.repeat(Math.round(pct/5)) + '░'.repeat(20-Math.round(pct/5));
+            return `${emojis[i]} **${op}**\n\`${bar}\` ${pct}% (${cnt} voto${cnt!==1?'s':''})`;
+          }).join('\n\n');
+          const canal = interaction.guild?.channels.cache.get(enc.canal);
+          if (canal) await canal.send(safe(`📊 **RESULTADOS — ${enc.pregunta}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${barras}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n👥 Total de votos: **${total}**`)).catch(()=>{});
+        }, minutos * 60000);
+        break;
+      }
+
+      // ── PERFIL ACADÉMICO COMPLETO ──
+      case 'perfil': {
+        const targetUser = interaction.options.getUser('alumno');
+        const uid   = targetUser ? targetUser.id : interaction.user.id;
+        if (targetUser && !esProfesor(interaction.user.id)) { await interaction.editReply('❌ Solo el profesor puede ver perfiles de otros alumnos.'); break; }
+        const nombreRealP = getNombreReal(uid, targetUser?.username || interaction.member?.displayName || interaction.user.username);
+        const p     = puntos.get(uid);
+        const reg   = registros.get(uid);
+        const hist  = historial.get(uid) || [];
+        const rol   = p ? getRol(p.pts) : { nombre: 'Sin actividad', emoji: '⚪' };
+        const pos   = p ? getPosicion(uid) : '—';
+        const logrosObj = (p?.logros||[]).map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `${l.emoji}` : ''; }).join(' ') || '—';
+
+        // Predicción IA
+        let prediccion = '';
+        if (p && p.asistencias >= 2) {
+          const pctAsist = Math.round((p.asistencias / Math.max(p.asistencias + 2, 5)) * 100);
+          if (pctAsist >= 80 && p.entregas >= 2) prediccion = '🟢 Alta probabilidad de regularizar';
+          else if (pctAsist >= 60 || p.entregas >= 1) prediccion = '🟡 Probabilidad media — necesita más entregas';
+          else prediccion = '🔴 En riesgo — baja actividad';
+        } else { prediccion = '⚪ Sin datos suficientes'; }
+
+        const ficha = safe(
+          `👤 **PERFIL ACADÉMICO — ${nombreRealP}**\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+          `${rol.emoji} **Rol:** ${rol.nombre} | **Posición:** #${pos} del ranking\n` +
+          `🎓 **Carrera:** ${reg?.carrera || 'No especificada'}\n` +
+          `💬 **Discord:** @${reg?.discordUser || interaction.user.username}\n` +
+          `📅 **Registrado:** ${reg?.registradoEn || 'Sin registro'}\n\n` +
+          `━━ Actividad ━━\n` +
+          `📊 **Puntos totales:** ${p?.pts || 0}\n` +
+          `✅ **Asistencias:** ${p?.asistencias || 0} clases\n` +
+          `📤 **Entregas:** ${p?.entregas || 0} trabajos\n` +
+          `💬 **Preguntas a la IA:** ${p?.preguntas || 0}\n` +
+          `🔥 **Racha actual:** ${p?.streak || 0} clases\n\n` +
+          `━━ Logros ━━\n` +
+          `🏅 ${logrosObj} (${(p?.logros||[]).length}/${LOGROS.length})\n\n` +
+          `━━ Historial de entregas ━━\n` +
+          `${hist.length ? hist.slice(-5).reverse().map((h,i) => `${i+1}. **${h.actividad}** — ${h.fecha}`).join('\n') : 'Sin entregas registradas'}\n\n` +
+          `━━ Predicción IA ━━\n` +
+          `${prediccion}\n\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓 · ${fechaAR()}*`
+        );
+        await interaction.editReply(ficha);
         break;
       }
 
