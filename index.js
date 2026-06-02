@@ -267,7 +267,7 @@ function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
 const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
-  'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta'
+  'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -836,6 +836,7 @@ const commands = [
   new SlashCommandBuilder().setName('codigo')
     .setDescription('Registrar presencia con el código del pizarrón (alternativa al GPS)')
     .addStringOption(o => o.setName('valor').setDescription('Código de 4 dígitos del pizarrón').setRequired(true).setMinLength(4).setMaxLength(4)),
+  new SlashCommandBuilder().setName('ver-codigo').setDescription('👨‍🏫 Ver o regenerar el código del pizarrón de la clase actual'),
   new SlashCommandBuilder().setName('confirmar')
     .setDescription('Confirmar presencia con el código GPS de la página web')
     .addStringOption(o => o.setName('codigo').setDescription('Código de 6 caracteres que te dio la página').setRequired(true).setMinLength(6).setMaxLength(6)),
