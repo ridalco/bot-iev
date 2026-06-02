@@ -74,10 +74,62 @@ const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
 // ════════════════════════════════════════════════════════════════
 // KEEP-ALIVE HTTP — necesario para Render plan gratuito
 // ════════════════════════════════════════════════════════════════
-http.createServer((req, res) => {
+http.createServer(async (req, res) => {
+  // CORS para que la página presencia.html pueda conectarse
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
+
+  // Endpoint GPS: recibe verificación y devuelve código de confirmación
+  if (req.method === 'POST' && req.url === '/presencia/verificar') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const data     = JSON.parse(body);
+        const { token, uid, guildId, nombre, distancia, lat, lng } = data;
+
+        // Validar que hay sesión activa en ese servidor
+        const sesion = sesiones.get(guildId);
+        if (!sesion || !sesion.activa) {
+          res.writeHead(400, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ ok: false, error: 'No hay clase activa en este servidor.' }));
+          return;
+        }
+
+        // Verificar que el alumno no marcó ya
+        if (sesion.asistentes.has(uid)) {
+          res.writeHead(200, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ ok: false, error: 'Ya registraste tu presencia en esta clase.' }));
+          return;
+        }
+
+        // Generar código de confirmación único de 6 caracteres
+        const codigo = Math.random().toString(36).substring(2, 8).toUpperCase();
+        codigosGPS.set(codigo, {
+          uid, guildId,
+          nombre: decodeURIComponent(nombre || uid),
+          distancia: Math.round(distancia),
+          expira: Date.now() + 10 * 60 * 1000, // 10 minutos para confirmar
+          usado: false
+        });
+
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({ ok: true, codigo, mensaje: 'Ubicación verificada. Ingresá el código en Discord.' }));
+      } catch (e) {
+        res.writeHead(500, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify({ ok: false, error: 'Error interno.' }));
+      }
+    });
+    return;
+  }
+
+  // Keep-alive
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end(`Mentor bot activo — ${ahoraAR()}`);
-}).listen(PORT, () => LOG.info(`Keep-alive HTTP en puerto ${PORT}`));
+}).listen(PORT, () => LOG.info(`Keep-alive y endpoint GPS en puerto ${PORT}`));
 
 // ════════════════════════════════════════════════════════════════
 // PERSISTENCIA DE DATOS EN DISCO
@@ -97,6 +149,7 @@ let tareaCounter  = 1;
 let eventoCounter = 1;
 let torneoActivo  = null; // { pregunta, opciones, correcta, respuestas: Map, cierra: timestamp }
 const encuestas   = new Map(); // guildId → { pregunta, opciones, votos: Map, cierra, msgId, canal }
+const codigosGPS  = new Map(); // codigo → { uid, guildId, nombre, distancia, expira, usado }
 
 function cargarDatos() {
   try {
@@ -737,6 +790,9 @@ const commands = [
   new SlashCommandBuilder().setName('codigo')
     .setDescription('Registrar presencia con el código del pizarrón (alternativa al GPS)')
     .addStringOption(o => o.setName('valor').setDescription('Código de 4 dígitos del pizarrón').setRequired(true).setMinLength(4).setMaxLength(4)),
+  new SlashCommandBuilder().setName('confirmar')
+    .setDescription('Confirmar presencia con el código GPS de la página web')
+    .addStringOption(o => o.setName('codigo').setDescription('Código de 6 caracteres que te dio la página').setRequired(true).setMinLength(6).setMaxLength(6)),
   new SlashCommandBuilder().setName('registrarme')
     .setDescription('Registrá tu nombre real para que aparezca en la asistencia')
     .addStringOption(o => o.setName('nombre').setDescription('Tu nombre y apellido completo').setRequired(true))
@@ -792,6 +848,12 @@ client.once(Events.ClientReady, async (c) => {
   setInterval(guardarDatos, 5 * 60 * 1000);
   // Limpiar formularios expirados cada 5 minutos
   setInterval(limpiarFormularios, 5 * 60 * 1000);
+  // Limpiar códigos GPS expirados cada 5 minutos
+  setInterval(() => {
+    const ahora = Date.now();
+    for (const [k, v] of codigosGPS.entries())
+      if (ahora > v.expira || v.usado) codigosGPS.delete(k);
+  }, 5 * 60 * 1000);
   // Backup Sheets domingos 22hs
   setInterval(async () => {
     const { dia, hora, min } = fechaHoraAR();
@@ -834,13 +896,9 @@ client.once(Events.ClientReady, async (c) => {
       if (d === 0 && !ev.av0) { ev.av0 = true; guardarDatos(); await av(`🔴 **HOY — ${ev.titulo}**`); }
     }
 
-    // Asistencia automática
-    for (const h of HORARIOS_CLASE)
-      if (h.dia===dia && h.hora===hora && h.min===min)
-        for (const g of client.guilds.cache.values()) {
-          const c = g.channels.cache.find(c => c.name==='dudas');
-          if (c) await iniciarClase(c, 'Clase programada', g.id);
-        }
+    // Asistencia automática DESACTIVADA
+    // El profesor inicia manualmente con /iniciar-clase
+    // Si querés reactivarla editá HORARIOS_CLASE arriba
 
     // Noticias automáticas 8:00 AM
     if (hora === 8 && min === 0)
@@ -1489,6 +1547,59 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         for (const [act, lista] of entregasPorActiv.entries())
           msg += `📚 **${act}** — ${lista.length} entrega${lista.length!==1?'s':''}\n${lista.map(e=>`  · ${e.nombre} (${e.hora})`).join('\n')}\n\n`;
         await interaction.editReply(safe(msg));
+        break;
+      }
+
+      // ── CONFIRMAR PRESENCIA GPS ──
+      case 'confirmar': {
+        const codigo  = interaction.options.getString('codigo').toUpperCase().trim();
+        const sesion  = getSesion(interaction.guildId);
+        const uid     = interaction.user.id;
+
+        if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
+
+        const datos = codigosGPS.get(codigo);
+
+        if (!datos) {
+          await interaction.editReply('Código incorrecto o expirado. Volvé a abrir el link de asistencia y verificá tu ubicación de nuevo.');
+          break;
+        }
+        if (datos.usado) {
+          await interaction.editReply('Este código ya fue usado. Cada código funciona una sola vez.');
+          break;
+        }
+        if (Date.now() > datos.expira) {
+          codigosGPS.delete(codigo);
+          await interaction.editReply('El código expiró. Abrí el link de asistencia de nuevo y verificá tu ubicación.');
+          break;
+        }
+        if (datos.guildId !== interaction.guildId) {
+          await interaction.editReply('Este código no corresponde a este servidor.');
+          break;
+        }
+        if (sesion.asistentes.has(uid)) {
+          await interaction.editReply(`${getNombreReal(uid, interaction.member?.displayName || interaction.user.username)}, ya marcaste presente.`);
+          break;
+        }
+
+        // Todo OK — marcar presencia
+        datos.usado = true;
+        const nombre = getNombreReal(uid, datos.nombre || interaction.member?.displayName || interaction.user.username);
+        const hora   = horaAR();
+        sesion.asistentes.set(uid, { nombre, hora, metodo: 'gps', distancia: datos.distancia });
+        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+        await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+        const p   = darPuntos(uid, nombre, 'asistencia');
+        const rol = getRol(p.pts);
+        await actualizarRol(interaction.member, p.pts);
+        const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
+        const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} **${l.nombre}**` : ''; }).join('\n') : '';
+        const sinRegistro = !registros.has(uid) ? '\n💡 Con /registrarme podés poner tu nombre real.' : '';
+        await interaction.editReply(
+          `✅ **${nombre}** — presencia a las **${hora}** (📍 ${datos.distancia}m del instituto)\n` +
+          `${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` +
+          `${logroTxt}${sinRegistro}`
+        );
         break;
       }
 
