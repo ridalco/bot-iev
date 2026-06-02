@@ -162,8 +162,23 @@ function cargarDatos() {
     if (raw.registros) for (const [k, v] of Object.entries(raw.registros)) registros.set(k, v);
     if (raw.historial)  for (const [k, v] of Object.entries(raw.historial))  historial.set(k, v);
     if (raw.rubricas)   for (const [k, v] of Object.entries(raw.rubricas))   rubricas.set(k, v);
-    if (raw.tareaCounter)  tareaCounter  = raw.tareaCounter;
-    if (raw.eventoCounter) eventoCounter = raw.eventoCounter;
+    if (raw.tareaCounter)    tareaCounter    = raw.tareaCounter;
+    if (raw.eventoCounter)   eventoCounter   = raw.eventoCounter;
+    if (raw.clasesTotales)   for (const [k, v] of Object.entries(raw.clasesTotales)) clasesTotales.set(k, v);
+    if (raw.sesionActiva) {
+      for (const [gid, s] of Object.entries(raw.sesionActiva)) {
+        sesiones.set(gid, {
+          activa:     s.activa || false,
+          asistentes: new Map(Object.entries(s.asistentes || {})),
+          fecha:      s.fecha || '',
+          titulo:     s.titulo || 'Clase',
+          preguntas:  s.preguntas || [],
+          codigoClase: s.codigoClase || '',
+          tokenTs:    s.tokenTs || 0,
+        });
+      }
+      LOG.info('Sesiones restauradas desde disco.');
+    }
     LOG.info(`Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
   } catch (e) { LOG.error('Error cargando datos', e); }
 }
@@ -177,6 +192,16 @@ function guardarDatos() {
       fs.writeFileSync(DATA_FILE, JSON.stringify({
         puntos:       Object.fromEntries(puntos),
         registros:    Object.fromEntries(registros),
+        clasesTotales: Object.fromEntries(clasesTotales),
+        sesionActiva:  Object.fromEntries([...sesiones.entries()].map(([gid, s]) => [gid, {
+          activa:      s.activa,
+          asistentes:  s.asistentes ? Object.fromEntries(s.asistentes) : {},
+          fecha:       s.fecha || '',
+          titulo:      s.titulo || '',
+          preguntas:   s.preguntas || [],
+          codigoClase: s.codigoClase || '',
+          tokenTs:     s.tokenTs || 0,
+        }])),
         historial:    Object.fromEntries(historial),
         rubricas:     Object.fromEntries(rubricas),
         eventos:      Object.fromEntries(eventos),
@@ -192,6 +217,7 @@ function guardarDatos() {
 // ESTADO EN MEMORIA (no persiste entre reinicios — es esperado)
 // ════════════════════════════════════════════════════════════════
 const sesiones          = new Map(); // guildId → { activa, asistentes, fecha, preguntas }
+const clasesTotales     = new Map(); // guildId → número de clases dictadas
 const formularioActivo  = new Map(); // userId  → { paso, nombre, actividad, link, comentario, expira }
 const cooldowns         = new Map(); // userId  → timestamp
 const quizActivo        = new Map(); // userId  → { pregunta, opciones, correcta, explicacion, unidad, respondido }
@@ -395,22 +421,27 @@ const ROLES_DISCORD = [
 ];
 
 async function actualizarRol(member, pts) {
+  // Verificar permisos antes de intentar — evita el error 50013 en logs
   try {
-    const g = member.guild;
+    const g    = member.guild;
+    const me   = g.members.cache.get(client.user.id);
+    if (!me || !me.permissions.has('ManageRoles')) return; // sin permisos, salir silenciosamente
     for (const rd of ROLES_DISCORD) {
-      if (!g.roles.cache.find(r => r.name === rd.nombre))
-        await g.roles.create({ name: rd.nombre, color: rd.color, reason: 'Mentor' });
+      if (!g.roles.cache.find(r => r.name === rd.nombre)) {
+        try { await g.roles.create({ name: rd.nombre, color: rd.color, reason: 'Mentor' }); }
+        catch {} // ignorar si falla la creación
+      }
     }
     for (const rd of ROLES_DISCORD) {
       const r = g.roles.cache.find(r => r.name === rd.nombre);
-      if (r && member.roles.cache.has(r.id)) await member.roles.remove(r);
+      if (r && member.roles.cache.has(r.id)) { try { await member.roles.remove(r); } catch {} }
     }
     const rd = ROLES_DISCORD.find(r => pts >= r.minPts);
     if (rd) {
       const r = g.roles.cache.find(r => r.name === rd.nombre);
-      if (r) await member.roles.add(r);
+      if (r) { try { await member.roles.add(r); } catch {} }
     }
-  } catch (e) { LOG.error('Error asignando rol Discord', e); }
+  } catch {} // silenciar completamente
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -702,21 +733,36 @@ async function iniciarClase(channel, titulo, guildId) {
   s.linkParams = linkParams;
   s.tokenTs    = Date.now();
 
+  // Mensaje público en el canal — SIN el código
   await channel.send({
     content:
       `📋 **ASISTENCIA — ${s.titulo}**\n` +
       `📅 **${s.fecha}** | 🕐 **${horaAR()}** | ⏰ Expira en **20 minutos**\n\n` +
-      `**Para registrar tu presencia:**\n` +
-      `1️⃣ Abrí el link desde tu celular o PC del colegio\n` +
+      `Para registrar tu presencia:\n` +
+      `1️⃣ Hacé clic en **Registrar presencia** con tu celular o PC del colegio\n` +
       `2️⃣ Activá la ubicación cuando el navegador lo pida\n` +
-      `3️⃣ Si estás en el instituto, se registra automáticamente\n\n` +
-      `🔒 *El sistema verifica que estés a menos de 15 metros del instituto.*\n\n` +
-      `🔑 **Código para presencia sin GPS: \`${s.codigoClase}\`** ← escribilo en el pizarrón`,
+      `3️⃣ La página te va a dar un código de 6 letras — ingresalo con \`/confirmar\`\n\n` +
+      `Si no podés usar el GPS, pedile el código del pizarrón al profesor y usá \`/codigo\`.`,
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Link).setURL(`${linkBase}?${linkParams.replace('uid=', 'uid=__UID__')}`),
-      new ButtonBuilder().setCustomId('presente').setLabel('✅ Presente (sin GPS)').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Link)
+        .setURL(`${linkBase}?token=${s.tokenTs}_abc&uid=__UID__&guild=${encodeURIComponent(guildName)}&clase=${encodeURIComponent(s.titulo)}`),
+      new ButtonBuilder().setCustomId('presente').setLabel('🔑 Tengo código del pizarrón').setStyle(ButtonStyle.Secondary)
     )]
   });
+
+  // DM PRIVADO al profesor con el código — nunca se publica en el canal
+  if (PROFESOR_ID) {
+    try {
+      const prof = await client.users.fetch(PROFESOR_ID);
+      await prof.send(
+        `🔑 **Código de clase — ${s.titulo}**\n` +
+        `📅 ${s.fecha} | 🏫 ${guildName}\n\n` +
+        `Escribí este código en el pizarrón para alumnos sin GPS:\n\n` +
+        `> **${s.codigoClase}**\n\n` +
+        `_Este código es solo para vos. Expira cuando cerrés la clase._`
+      );
+    } catch (e) { LOG.warn('No se pudo enviar DM con código al profesor: ' + e.message); }
+  }
 
   // Auto-cerrar link a los 20 minutos
   setTimeout(async () => {
@@ -1187,12 +1233,17 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'reporte': {
-        const s    = getSesion(interaction.guildId);
-        const rank = getRankingCompleto();
-        const prom = rank.length ? Math.round(rank.reduce((a,[,p]) => a+p.pts, 0)/rank.length) : 0;
+        const s        = getSesion(interaction.guildId);
+        const rank     = getRankingCompleto();
+        const prom     = rank.length ? Math.round(rank.reduce((a,[,p]) => a+p.pts, 0)/rank.length) : 0;
+        const riesgoR  = detectarAlumnosEnRiesgo();
+        const totalCls = clasesTotales.get(interaction.guildId) || 0;
+        const pAsist   = puntos.size>0&&totalCls>0 ? Math.round([...puntos.values()].reduce((sum,p)=>sum+(p.asistencias||0),0)/puntos.size/totalCls*100) : 0;
         await interaction.editReply(safe(
           `📊 **Reporte — ${interaction.guild?.name}**\n📅 ${ahoraAR()}\n\n` +
           `👥 Alumnos: ${puntos.size} | 📈 Promedio: ${prom} pts | 🏆 Líder: ${rank[0]?.[1]?.nombre||'—'} (${rank[0]?.[1]?.pts||0} pts)\n` +
+          `📊 Asistencia promedio: **${pAsist}%** de ${totalCls} clases dictadas\n` +
+          `⚠️ En riesgo: ${riesgoR.length} alumno${riesgoR.length!==1?'s':''}\n\n` +
           `🎓 Clase: ${s.activa ? `🟢 Activa — ${s.asistentes.size} presentes` : '⚪ Inactiva'}\n` +
           `📚 Tareas activas: ${tareas.size} | 📅 Eventos próximos: ${[...eventos.values()].filter(ev=>{const f=parseFecha(ev.fecha);return f&&diasHasta(f)>=0;}).length}\n` +
           `🔍 Actividades con entregas: ${entregasPorActiv.size}`
@@ -1209,9 +1260,34 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const s = getSesion(interaction.guildId);
         if (!s.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
         s.activa = false;
+
+        // Incrementar contador de clases totales
+        const guildId = interaction.guildId;
+        clasesTotales.set(guildId, (clasesTotales.get(guildId) || 0) + 1);
+        const totalClases = clasesTotales.get(guildId);
+        guardarDatos();
+
         const lista   = [...s.asistentes.values()];
-        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${a.metodo === 'codigo' ? ' *(código)*' : ''}`).join('\n') : 'Sin presentes.';
-        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes**\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n\n⏳ Generando resumen de clase con IA...`));
+        const metodoStr = a => a.metodo === 'codigo' ? ' 🔑' : a.metodo === 'gps' ? ` 📍${a.distancia ? ' '+a.distancia+'m' : ''}` : '';
+        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${metodoStr(a)}`).join('\n') : 'Sin presentes.';
+        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes** · Clase #${totalClases} del cuatrimestre\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n⏳ Generando resumen con IA...`));
+
+        // DM a alumnos registrados que no asistieron
+        const presentesIds = new Set(s.asistentes.keys());
+        for (const [uid, reg] of registros.entries()) {
+          if (presentesIds.has(uid)) continue;
+          try {
+            const user = await client.users.fetch(uid);
+            const clasesDel = [...(puntos.get(uid)?.asistencias ? [] : [])];
+            const pct = puntos.has(uid) ? Math.round((puntos.get(uid).asistencias / totalClases) * 100) : 0;
+            await user.send(
+              `📌 **Faltaste a la clase de hoy** — ${s.fecha}\n` +
+              `📚 ${s.titulo || 'Clase'} · ${interaction.guild?.name}\n\n` +
+              `Tu asistencia actual: **${puntos.get(uid)?.asistencias || 0}/${totalClases}** clases (${pct}%)\n` +
+              `_Si tenés una justificación, avisale al profesor._`
+            );
+          } catch {} // Si el alumno bloqueó DMs, ignorar
+        }
 
         // Generar resumen automático con IA si hubo preguntas
         try {
@@ -1311,8 +1387,14 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const pos  = getPosicion(uid);
         const tot  = getRankingCompleto().length;
         const prox = p.pts >= 200 ? '' : p.pts >= 100 ? ` · Faltan ${200-p.pts} pts para Experto Digital 🏆` : p.pts >= 50 ? ` · Faltan ${100-p.pts} pts para Colaborador ⭐` : ` · Faltan ${50-p.pts} pts para Aprendiz 📚`;
-        const logrosObtenidos = (p.logros||[]).map(id=>{ const l=LOGROS.find(x=>x.id===id); return l?l.emoji:''; }).join(' ') || '—';
-        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot} | 🔥 Racha: ${p.streak||0}\n\n✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)\n\n🏅 Logros: ${logrosObtenidos}\nUsá /mislogros para ver el detalle.`);
+        const logrosObtenidos  = (p.logros||[]).map(id=>{ const l=LOGROS.find(x=>x.id===id); return l?l.emoji:''; }).join(' ') || '—';
+        const totalCls  = clasesTotales.get(interaction.guildId) || 0;
+        const pctAsist  = totalCls > 0 ? Math.round((p.asistencias / totalCls) * 100) : 0;
+        const semaforo  = pctAsist >= 80 ? '🟢' : pctAsist >= 60 ? '🟡' : '🔴';
+        const asistStr  = totalCls > 0
+          ? `✅ Asistencias: ${p.asistencias}/${totalCls} clases (${semaforo} **${pctAsist}%** — necesitás 80% para regularizar)`
+          : `✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)`;
+        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot} | 🔥 Racha: ${p.streak||0}\n\n${asistStr}\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)\n\n🏅 Logros: ${logrosObtenidos}\nUsá /mislogros para ver el detalle.`);
         break;
       }
 
