@@ -169,13 +169,15 @@ function cargarDatos() {
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
         sesiones.set(gid, {
-          activa:     s.activa || false,
-          asistentes: new Map(Object.entries(s.asistentes || {})),
-          fecha:      s.fecha || '',
-          titulo:     s.titulo || 'Clase',
-          preguntas:  s.preguntas || [],
-          codigoClase: s.codigoClase || '',
-          tokenTs:    s.tokenTs || 0,
+          activa:               s.activa || false,
+          asistentes:           new Map(Object.entries(s.asistentes || {})),
+          fecha:                s.fecha || '',
+          titulo:               s.titulo || 'Clase',
+          preguntas:            s.preguntas || [],
+          codigoClase:          s.codigoClase || '',
+          tokenTs:              s.tokenTs || 0,
+          presentesUltimaClase: s.presentesUltimaClase || [],
+          fechaUltimaClase:     s.fechaUltimaClase || '',
         });
       }
       LOG.info('Sesiones restauradas desde disco.');
@@ -196,13 +198,15 @@ function guardarDatos() {
         clasesTotales: Object.fromEntries(clasesTotales),
         notas:         Object.fromEntries(notas),
         sesionActiva:  Object.fromEntries([...sesiones.entries()].map(([gid, s]) => [gid, {
-          activa:      s.activa,
-          asistentes:  s.asistentes ? Object.fromEntries(s.asistentes) : {},
-          fecha:       s.fecha || '',
-          titulo:      s.titulo || '',
-          preguntas:   s.preguntas || [],
-          codigoClase: s.codigoClase || '',
-          tokenTs:     s.tokenTs || 0,
+          activa:               s.activa,
+          asistentes:           s.asistentes ? Object.fromEntries(s.asistentes) : {},
+          fecha:                s.fecha || '',
+          titulo:               s.titulo || '',
+          preguntas:            s.preguntas || [],
+          codigoClase:          s.codigoClase || '',
+          tokenTs:              s.tokenTs || 0,
+          presentesUltimaClase: s.presentesUltimaClase || [],
+          fechaUltimaClase:     s.fechaUltimaClase || '',
         }])),
         historial:    Object.fromEntries(historial),
         rubricas:     Object.fromEntries(rubricas),
