@@ -871,7 +871,8 @@ const commands = [
   new SlashCommandBuilder().setName('ver-codigo').setDescription('👨‍🏫 Ver o regenerar el código del pizarrón de la clase actual'),
   new SlashCommandBuilder().setName('nota')
     .setDescription('👨‍🏫 Cargar una nota a un alumno')
-    .addUserOption(o => o.setName('alumno').setDescription('Alumno a calificar').setRequired(true))
+    .addStringOption(o => o.setName('nombre').setDescription('Nombre real del alumno (ej: Dominguez Dante)').setRequired(false))
+    .addUserOption(o => o.setName('alumno').setDescription('O seleccioná por @usuario Discord').setRequired(false))
     .addStringOption(o => o.setName('actividad').setDescription('Nombre del trabajo o parcial').setRequired(true))
     .addNumberOption(o => o.setName('calificacion').setDescription('Nota del 1 al 10').setRequired(true).setMinValue(1).setMaxValue(10))
     .addStringOption(o => o.setName('observacion').setDescription('Observación opcional').setRequired(false)),
