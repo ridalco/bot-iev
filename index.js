@@ -1321,21 +1321,23 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${metodoStr(a)}`).join('\n') : 'Sin presentes.';
         await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes** · Clase #${totalClases} del cuatrimestre\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n⏳ Generando resumen con IA...`));
 
-        // DM a alumnos registrados que no asistieron
+        // DM a alumnos ausentes — solo del mismo servidor y que hayan asistido antes
         const presentesIds = new Set(s.asistentes.keys());
         for (const [uid, reg] of registros.entries()) {
-          if (presentesIds.has(uid)) continue;
+          if (reg.guildId !== interaction.guildId) continue; // otro servidor
+          if (presentesIds.has(uid)) continue;               // ya estaban presentes
+          const pDatos = puntos.get(uid);
+          if (!pDatos || !pDatos.asistencias) continue;      // nunca asistieron = no avisar
           try {
             const user = await client.users.fetch(uid);
-            const clasesDel = [...(puntos.get(uid)?.asistencias ? [] : [])];
-            const pct = puntos.has(uid) ? Math.round((puntos.get(uid).asistencias / totalClases) * 100) : 0;
+            const pct  = Math.round((pDatos.asistencias / totalClases) * 100);
             await user.send(
-              `📌 **Faltaste a la clase de hoy** — ${s.fecha}\n` +
-              `📚 ${s.titulo || 'Clase'} · ${interaction.guild?.name}\n\n` +
-              `Tu asistencia actual: **${puntos.get(uid)?.asistencias || 0}/${totalClases}** clases (${pct}%)\n` +
-              `_Si tenés una justificación, avisale al profesor._`
+              '📌 **Faltaste a la clase de hoy** — ' + s.fecha + '\n' +
+              '📚 ' + (s.titulo||'Clase') + ' · ' + (interaction.guild?.name||'') + '\n\n' +
+              'Tu asistencia: **' + pDatos.asistencias + '/' + totalClases + '** clases (' + pct + '%)\n' +
+              '_Si tenés una justificación, avisale al profesor._'
             );
-          } catch {} // Si el alumno bloqueó DMs, ignorar
+          } catch {}
         }
 
         // Generar resumen automático con IA si hubo preguntas
