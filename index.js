@@ -1887,6 +1887,105 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         break;
       }
 
+      case 'nota': {
+        const targetUser   = interaction.options.getUser('alumno');
+        const nombreBuscar = interaction.options.getString('nombre');
+        const actividad    = interaction.options.getString('actividad');
+        const calificacion = interaction.options.getNumber('calificacion');
+        const observacion  = interaction.options.getString('observacion') || '';
+        if (!targetUser && !nombreBuscar) {
+          await interaction.editReply('Indicá el alumno — escribí el nombre en el campo nombre o seleccioná con @alumno.');
+          break;
+        }
+        let uid, nombreReal;
+        if (targetUser) {
+          uid = targetUser.id;
+          nombreReal = getNombreReal(uid, targetUser.username);
+        } else {
+          const busq = nombreBuscar.toLowerCase().trim();
+          const enc  = [...registros.entries()].find(([,r]) => r.nombreReal && r.nombreReal.toLowerCase().includes(busq));
+          if (!enc) {
+            const sug = [...registros.entries()].filter(([,r]) => r.nombreReal && r.nombreReal.toLowerCase().includes(busq.split(' ')[0])).slice(0,5).map(([,r]) => '• '+r.nombreReal+' (@'+(r.discordUser||'?')+')').join('\n');
+            await interaction.editReply('No encontré "'+nombreBuscar+'".'+(sug ? '\n\nSimilares:\n'+sug+'\n\nProbá con más letras.' : '\nEse alumno no usó /registrarme todavía.'));
+            break;
+          }
+          uid = enc[0]; nombreReal = enc[1].nombreReal;
+        }
+        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOMS = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
+        const matN = MNOMS[mat] || mat;
+        const notaObj = { materia: matN, actividad, nota: calificacion, observacion, fecha: fechaAR(), guildId: interaction.guildId };
+        if (!notas.has(uid)) notas.set(uid, []);
+        const listaN = notas.get(uid);
+        const idxN   = listaN.findIndex(n => n.actividad === actividad && n.materia === matN);
+        if (idxN >= 0) listaN[idxN] = notaObj; else listaN.push(notaObj);
+        notas.set(uid, listaN);
+        guardarDatos();
+        await guardarNotaSheets(nombreReal, matN, actividad, calificacion, observacion, interaction.guild?.name);
+        const concepto = notaConceptual(calificacion);
+        const emoji    = notaEmoji(calificacion);
+        try { const u = await interaction.client.users.fetch(uid); await u.send('📝 **Nueva nota**\n\n📚 **'+actividad+'** — '+matN+'\n'+emoji+' **'+calificacion+'/10** — '+concepto+'\n'+(observacion?'💬 '+observacion+'\n':'')+'📅 '+fechaAR()+'\n\nUsá /misnotas para ver todas tus notas.'); } catch {}
+        await interaction.editReply(emoji+' **Nota registrada** — '+nombreReal+'\n\n📚 **'+actividad+'** · '+matN+'\n**'+calificacion+'/10** — '+concepto+'\n'+(observacion?'💬 '+observacion+'\n':'')+'\n📧 El alumno fue notificado por DM.');
+        break;
+      }
+
+      case 'misnotas': {
+        const uid2 = interaction.user.id;
+        const nom2 = getNombreReal(uid2, interaction.member?.displayName || interaction.user.username);
+        const lst2 = notas.get(uid2);
+        if (!lst2?.length) { await interaction.editReply('Todavía no tenés notas registradas.'); break; }
+        const pm2 = {};
+        for (const n of lst2) { if (!pm2[n.materia]) pm2[n.materia]=[]; pm2[n.materia].push(n); }
+        let msg2 = '📝 **Notas de '+nom2+'**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+        let s2=0,c2=0;
+        for (const [mat, ns] of Object.entries(pm2)) {
+          const pr = Math.round(ns.reduce((a,n)=>a+n.nota,0)/ns.length*10)/10;
+          msg2 += '**'+mat+'** — prom: '+notaEmoji(pr)+' '+pr+'/10\n';
+          for (const n of ns) msg2 += '  • '+n.actividad+': **'+n.nota+'/10** ('+notaConceptual(n.nota)+')'+(n.observacion?' — '+n.observacion:'')+'\n';
+          msg2 += '\n'; s2+=ns.reduce((a,n)=>a+n.nota,0); c2+=ns.length;
+        }
+        const pf2 = c2>0?Math.round(s2/c2*10)/10:0;
+        msg2 += '━━━━━━━━━━━━━━━━━━━━━━━━\n'+notaEmoji(pf2)+' **Promedio general: '+pf2+'/10** — '+notaConceptual(pf2);
+        await interaction.editReply(safe(msg2));
+        break;
+      }
+
+      case 'notas-alumno': {
+        const tU = interaction.options.getUser('alumno');
+        const un = tU.id;
+        const nn = getNombreReal(un, tU.username);
+        const ln = notas.get(un);
+        if (!ln?.length) { await interaction.editReply(nn+' todavía no tiene notas registradas.'); break; }
+        const pm3 = {};
+        for (const n of ln) { if (!pm3[n.materia]) pm3[n.materia]=[]; pm3[n.materia].push(n); }
+        let msg3 = '📝 **Notas de '+nn+'**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+        let s3=0,c3=0;
+        for (const [mat, ns] of Object.entries(pm3)) {
+          const pr = Math.round(ns.reduce((a,n)=>a+n.nota,0)/ns.length*10)/10;
+          msg3 += '**'+mat+'** — prom: '+notaEmoji(pr)+' '+pr+'/10\n';
+          for (const n of ns) msg3 += '  • '+n.actividad+': **'+n.nota+'/10** ('+notaConceptual(n.nota)+') · '+n.fecha+(n.observacion?'\n    _'+n.observacion+'_':'')+'\n';
+          msg3 += '\n'; s3+=ns.reduce((a,n)=>a+n.nota,0); c3+=ns.length;
+        }
+        const pf3 = c3>0?Math.round(s3/c3*10)/10:0;
+        msg3 += '━━━━━━━━━━━━━━━━━━━━━━━━\n'+notaEmoji(pf3)+' **Promedio: '+pf3+'/10**';
+        await interaction.editReply(safe(msg3));
+        break;
+      }
+
+      case 'boletin-notas': {
+        if (!notas.size) { await interaction.editReply('No hay notas registradas todavía.'); break; }
+        let msgB = '📋 **Boletín — '+interaction.guild?.name+'**\n📅 '+fechaAR()+'\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+        for (const [uid, lista] of notas.entries()) {
+          if (!lista.length) continue;
+          const nom = getNombreReal(uid, puntos.get(uid)?.nombre || uid);
+          const pr  = Math.round(lista.reduce((a,n)=>a+n.nota,0)/lista.length*10)/10;
+          msgB += notaEmoji(pr)+' **'+nom+'** — '+pr+'/10 ('+lista.length+' actividad'+(lista.length!==1?'es':'')+')'+'\n';
+        }
+        msgB += '\n━━━━━━━━━━━━━━━━━━━━━━━━\nUsá /notas-alumno para el detalle.';
+        await interaction.editReply(safe(msgB));
+        break;
+      }
+
       case 'backup':
         await interaction.editReply('Guardando en Google Sheets...');
         await backupPuntos();
