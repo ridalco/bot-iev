@@ -1304,6 +1304,10 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         // Incrementar contador de clases totales
         const guildId = interaction.guildId;
         clasesTotales.set(guildId, (clasesTotales.get(guildId) || 0) + 1);
+
+        // Guardar presentes de hoy en sesión para /alumnos post-clase
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps' }));
+        s.fechaUltimaClase = s.fecha;
         const totalClases = clasesTotales.get(guildId);
         guardarDatos();
 
