@@ -2071,44 +2071,45 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'alumnos': {
-        const s         = getSesion(interaction.guildId);
-        const matActual = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOMS     = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
-        const matNombre = MNOMS[matActual] || matActual;
+        const s       = getSesion(interaction.guildId);
+        const totalCl = clasesTotales.get(interaction.guildId) || 0;
 
-        // Filtrar por materia del canal actual — o mostrar todos si es un canal general
-        const canalesGenerales = ['aviso','anuncios','general','información'];
-        const esGeneral        = canalesGenerales.some(n => (interaction.channel?.name||'').toLowerCase().includes(n));
+        // Prioridad 1: clase activa ahora
+        // Prioridad 2: última clase cerrada (guardada en disco)
+        // Prioridad 3: todos los registrados del servidor
+        const tieneActiva = s.activa && s.asistentes && s.asistentes.size > 0;
+        const tieneUltima = s.presentesUltimaClase && s.presentesUltimaClase.length > 0;
 
-        const alumnosFiltrados = esGeneral
-          ? [...registros.entries()]
-          : [...registros.entries()].filter(([uid, r]) => {
-              // Incluir si tiene la materia asignada O si tiene asistencias en esa materia
-              const tieneMateria = r.materia === matNombre || r.materia === matActual;
-              const tieneAsist   = r.guildId === interaction.guildId;
-              return tieneMateria || (!r.materia && tieneAsist);
-            });
-
-        if (!alumnosFiltrados.length) {
-          await interaction.editReply(`No hay alumnos registrados en **${matNombre}** todavía.
-
-Usá este comando desde un canal general (#aviso, #anuncios) para ver todos.`);
-          break;
+        if (tieneActiva || tieneUltima) {
+          const presentes = tieneActiva
+            ? [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora }))
+            : s.presentesUltimaClase;
+          const tituloC = s.fechaUltimaClase || s.fecha || 'Última clase';
+          const lineas = presentes.map((a, i) => {
+            const reg     = registros.get(a.uid);
+            const p       = puntos.get(a.uid);
+            const nAl     = notas.get(a.uid) || [];
+            const nProm   = nAl.length ? (Math.round(nAl.reduce((sum,n) => sum+n.nota,0)/nAl.length*10)/10)+'/10' : 'sin notas';
+            const discord = reg?.discordUser || p?.nombre || a.uid;
+            return (i+1) + '. **' + a.nombre + '** (@' + discord + ') — Notas: ' + nProm + ' · Pts: ' + (p?.pts||0);
+          });
+          const msg = '👥 **Clase ' + tituloC + '** — ' + presentes.length + ' presentes\nUsá el @apodo para /nota\n\n' + lineas.join('\n');
+          await interaction.editReply(safe(msg));
+        } else {
+          // Sin clase reciente — todos los del servidor
+          const todos = [...registros.entries()].filter(([,r]) => r.guildId === interaction.guildId);
+          if (!todos.length) { await interaction.editReply('No hay alumnos registrados todavía. Pediles que usen /registrarme.'); break; }
+          const lineas = todos.map(([uid, r], i) => {
+            const p     = puntos.get(uid);
+            const nAl   = notas.get(uid) || [];
+            const pctA  = totalCl > 0 && p ? Math.round((p.asistencias||0)/totalCl*100) : null;
+            const sem   = pctA === null ? '' : pctA >= 80 ? ' 🟢' : pctA >= 60 ? ' 🟡' : ' 🔴';
+            const nProm = nAl.length ? (Math.round(nAl.reduce((sum,n) => sum+n.nota,0)/nAl.length*10)/10)+'/10' : '—';
+            return (i+1) + '. **' + r.nombreReal + '** (@' + (r.discordUser||'?') + ')' + sem + ' — Notas: ' + nProm;
+          });
+          const msg = '👥 **Todos los alumnos (' + todos.length + ')**\nIniciá una clase para ver solo los de hoy\n\n' + lineas.join('\n');
+          await interaction.editReply(safe(msg));
         }
-
-        // Agregar info de asistencia y notas
-        const lista = alumnosFiltrados.map(([uid, r], i) => {
-          const p       = puntos.get(uid);
-          const notasAl = notas.get(uid) || [];
-          const totalCl = clasesTotales.get(interaction.guildId) || 0;
-          const pctA    = totalCl > 0 && p ? Math.round((p.asistencias||0)/totalCl*100) : null;
-          const semaf     = pctA === null ? '' : pctA >= 80 ? ' 🟢' : pctA >= 60 ? ' 🟡' : ' 🔴';
-          const notasProm = notasAl.length ? (Math.round(notasAl.reduce((s,n)=>s+n.nota,0)/notasAl.length*10)/10) + '/10' : '—';
-          return `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'})${semaf}\\n   Asistencias: ${p?.asistencias||0}${pctA!==null?' ('+pctA+'%)':''} · Notas prom: ${notasProm} · Pts: ${p?.pts||0}`;
-        }).join('\\n\\n');
-
-        const titulo = esGeneral ? `Todos los alumnos (${alumnosFiltrados.length})` : `${matNombre} — ${alumnosFiltrados.length} alumno${alumnosFiltrados.length!==1?'s':''}`;
-        await interaction.editReply(safe(`👥 **${titulo}**\n\n${lista}`));
         break;
       }
     }
