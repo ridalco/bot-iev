@@ -1711,6 +1711,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         sesion.asistentes.set(uid, { nombre, hora, metodo: 'gps', distancia: datos.distancia });
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
         await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+        // Guardar materia en el perfil del alumno
+        if (!registros.has(uid)) registros.set(uid, { nombreReal: nombre, discordUser: interaction.user.username, materia: mat, guildId: interaction.guildId, registradoEn: ahoraAR() });
+        else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
         const p   = darPuntos(uid, nombre, 'asistencia');
         const rol = getRol(p.pts);
         await actualizarRol(interaction.member, p.pts);
@@ -1741,6 +1744,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         sesion.asistentes.set(uid, { nombre, hora, metodo: 'codigo' });
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
         await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+        // Guardar materia en el perfil del alumno
+        if (!registros.has(uid)) registros.set(uid, { nombreReal: nombre, discordUser: interaction.user.username, materia: mat, guildId: interaction.guildId, registradoEn: ahoraAR() });
+        else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
         const p   = darPuntos(uid, nombre, 'asistencia');
         const rol = getRol(p.pts);
         await actualizarRol(interaction.member, p.pts);
@@ -2004,9 +2010,13 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const carrera     = interaction.options.getString('carrera') || '';
         if (nombreReal.length < 3) { await interaction.editReply('❌ El nombre debe tener al menos 3 caracteres.'); break; }
         const yaExistia   = registros.has(uid);
+        const matReg = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOMS  = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
         registros.set(uid, {
           nombreReal,
           carrera,
+          materia:     MNOMS[matReg] || matReg,
+          guildId:     interaction.guildId,
           discordUser: interaction.user.username,
           registradoEn: ahoraAR(),
         });
@@ -2053,10 +2063,44 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'alumnos': {
-        if (!registros.size) { await interaction.editReply('No hay alumnos registrados todavía.'); break; }
-        const lista = [...registros.entries()]
-          .map(([uid, r], i) => `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'}) — ${r.carrera||'sin carrera'}`).join('\n');
-        await interaction.editReply(safe(`👥 **Alumnos registrados (${registros.size}):**\n\n${lista}`));
+        const s         = getSesion(interaction.guildId);
+        const matActual = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOMS     = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
+        const matNombre = MNOMS[matActual] || matActual;
+
+        // Filtrar por materia del canal actual — o mostrar todos si es un canal general
+        const canalesGenerales = ['aviso','anuncios','general','información'];
+        const esGeneral        = canalesGenerales.some(n => (interaction.channel?.name||'').toLowerCase().includes(n));
+
+        const alumnosFiltrados = esGeneral
+          ? [...registros.entries()]
+          : [...registros.entries()].filter(([uid, r]) => {
+              // Incluir si tiene la materia asignada O si tiene asistencias en esa materia
+              const tieneMateria = r.materia === matNombre || r.materia === matActual;
+              const tieneAsist   = r.guildId === interaction.guildId;
+              return tieneMateria || (!r.materia && tieneAsist);
+            });
+
+        if (!alumnosFiltrados.length) {
+          await interaction.editReply(`No hay alumnos registrados en **${matNombre}** todavía.
+
+Usá este comando desde un canal general (#aviso, #anuncios) para ver todos.`);
+          break;
+        }
+
+        // Agregar info de asistencia y notas
+        const lista = alumnosFiltrados.map(([uid, r], i) => {
+          const p       = puntos.get(uid);
+          const notasAl = notas.get(uid) || [];
+          const totalCl = clasesTotales.get(interaction.guildId) || 0;
+          const pctA    = totalCl > 0 && p ? Math.round((p.asistencias||0)/totalCl*100) : null;
+          const semaf     = pctA === null ? '' : pctA >= 80 ? ' 🟢' : pctA >= 60 ? ' 🟡' : ' 🔴';
+          const notasProm = notasAl.length ? (Math.round(notasAl.reduce((s,n)=>s+n.nota,0)/notasAl.length*10)/10) + '/10' : '—';
+          return `${i+1}. **${r.nombreReal}** (@${r.discordUser||'?'})${semaf}\\n   Asistencias: ${p?.asistencias||0}${pctA!==null?' ('+pctA+'%)':''} · Notas prom: ${notasProm} · Pts: ${p?.pts||0}`;
+        }).join('\\n\\n');
+
+        const titulo = esGeneral ? `Todos los alumnos (${alumnosFiltrados.length})` : `${matNombre} — ${alumnosFiltrados.length} alumno${alumnosFiltrados.length!==1?'s':''}`;
+        await interaction.editReply(safe(`👥 **${titulo}**\n\n${lista}`));
         break;
       }
     }
