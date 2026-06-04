@@ -165,6 +165,7 @@ function cargarDatos() {
     if (raw.tareaCounter)    tareaCounter    = raw.tareaCounter;
     if (raw.eventoCounter)   eventoCounter   = raw.eventoCounter;
     if (raw.clasesTotales)   for (const [k, v] of Object.entries(raw.clasesTotales)) clasesTotales.set(k, v);
+    if (raw.notas)           for (const [k, v] of Object.entries(raw.notas))          notas.set(k, v);
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
         sesiones.set(gid, {
@@ -193,6 +194,7 @@ function guardarDatos() {
         puntos:       Object.fromEntries(puntos),
         registros:    Object.fromEntries(registros),
         clasesTotales: Object.fromEntries(clasesTotales),
+        notas:         Object.fromEntries(notas),
         sesionActiva:  Object.fromEntries([...sesiones.entries()].map(([gid, s]) => [gid, {
           activa:      s.activa,
           asistentes:  s.asistentes ? Object.fromEntries(s.asistentes) : {},
@@ -218,6 +220,7 @@ function guardarDatos() {
 // ════════════════════════════════════════════════════════════════
 const sesiones          = new Map(); // guildId → { activa, asistentes, fecha, preguntas }
 const clasesTotales     = new Map(); // guildId → número de clases dictadas
+const notas             = new Map(); // userId → [{ materia, actividad, nota, fecha, guildId, observacion }]
 const formularioActivo  = new Map(); // userId  → { paso, nombre, actividad, link, comentario, expira }
 const cooldowns         = new Map(); // userId  → timestamp
 const quizActivo        = new Map(); // userId  → { pregunta, opciones, correcta, explicacion, unidad, respondido }
@@ -267,7 +270,8 @@ function esProfesor(userId) { return !PROFESOR_ID || userId === PROFESOR_ID; }
 const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
-  'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo'
+  'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
+  'nota','notas-alumno','boletin-notas'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -406,6 +410,20 @@ function darPuntos(userId, nombre, tipo) {
 function getRankingCompleto() { return [...puntos.entries()].sort((a, b) => b[1].pts - a[1].pts); }
 function getRanking()          { return getRankingCompleto().slice(0, 10); }
 function getPosicion(uid)      { const i = getRankingCompleto().findIndex(([id]) => id === uid); return i === -1 ? '—' : i + 1; }
+function notaConceptual(n) {
+  if (n >= 9)  return 'Sobresaliente';
+  if (n >= 8)  return 'Muy bueno';
+  if (n >= 7)  return 'Bueno';
+  if (n >= 6)  return 'Satisfactorio';
+  if (n >= 4)  return 'Regular';
+  return 'Insuficiente';
+}
+function notaEmoji(n) {
+  if (n >= 8) return '🟢';
+  if (n >= 6) return '🟡';
+  return '🔴';
+}
+
 function getRol(pts) {
   if (pts >= 200) return { nombre: 'Experto Digital',    emoji: '🏆' };
   if (pts >= 100) return { nombre: 'Colaborador Activo', emoji: '⭐' };
@@ -608,6 +626,16 @@ async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
       resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] }
     });
   } catch (e) { LOG.error('Error guardando asistencia en Sheets', e); }
+}
+
+async function guardarNotaSheets(nombreAlumno, materia, actividad, nota, observacion, servidor) {
+  try {
+    const sheets = await getSheets();
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SPREADSHEET_ID, range: 'Notas!A:G', valueInputOption: 'USER_ENTERED',
+      resource: { values: [[fechaAR(), nombreAlumno, materia||'', actividad, nota, observacion||'', servidor||'']] }
+    });
+  } catch (e) { LOG.error('Error guardando nota en Sheets', e); }
 }
 
 async function backupPuntos() {
@@ -837,6 +865,17 @@ const commands = [
     .setDescription('Registrar presencia con el código del pizarrón (alternativa al GPS)')
     .addStringOption(o => o.setName('valor').setDescription('Código de 4 dígitos del pizarrón').setRequired(true).setMinLength(4).setMaxLength(4)),
   new SlashCommandBuilder().setName('ver-codigo').setDescription('👨‍🏫 Ver o regenerar el código del pizarrón de la clase actual'),
+  new SlashCommandBuilder().setName('nota')
+    .setDescription('👨‍🏫 Cargar una nota a un alumno')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno a calificar').setRequired(true))
+    .addStringOption(o => o.setName('actividad').setDescription('Nombre del trabajo o parcial').setRequired(true))
+    .addNumberOption(o => o.setName('calificacion').setDescription('Nota del 1 al 10').setRequired(true).setMinValue(1).setMaxValue(10))
+    .addStringOption(o => o.setName('observacion').setDescription('Observación opcional').setRequired(false)),
+  new SlashCommandBuilder().setName('misnotas').setDescription('Ver todas tus notas del cuatrimestre'),
+  new SlashCommandBuilder().setName('notas-alumno')
+    .setDescription('👨‍🏫 Ver todas las notas de un alumno')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno a consultar').setRequired(true)),
+  new SlashCommandBuilder().setName('boletin-notas').setDescription('👨‍🏫 Ver boletín completo de todos los alumnos'),
   new SlashCommandBuilder().setName('confirmar')
     .setDescription('Confirmar presencia con el código GPS de la página web')
     .addStringOption(o => o.setName('codigo').setDescription('Código de 6 caracteres que te dio la página').setRequired(true).setMinLength(6).setMaxLength(6)),
