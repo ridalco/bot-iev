@@ -2028,15 +2028,41 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         ].filter(Boolean).join('\n');
 
         const MMAP = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD' };
-        const destinatarios = [...registros.entries()].filter(([uid, r]) => {
+
+        // Buscar en registros por materia
+        let destinatarios = [...registros.entries()].filter(([uid, r]) => {
           if (matSel === 'todos') return r.guildId === interaction.guildId;
           return (r.materia === MMAP[matSel] || (r.materia||'').toLowerCase().includes(matSel)) && r.guildId === interaction.guildId;
         });
 
+        // Si no encontró por materia, usar TODOS los registrados del servidor
+        // (pasa cuando los alumnos se registraron antes de que se guardara la materia)
+        if (!destinatarios.length && matSel !== 'todos') {
+          destinatarios = [...registros.entries()].filter(([uid, r]) => r.guildId === interaction.guildId);
+          if (destinatarios.length) {
+            await interaction.editReply('No encontré alumnos con materia "' + matNom + '" asignada. Enviando a todos los registrados del servidor (' + destinatarios.length + ')...');
+          }
+        }
+
+        // Si sigue sin haber, buscar en puntos (alumnos que asistieron pero no se registraron)
         if (!destinatarios.length) {
-          await interaction.editReply('No hay alumnos registrados en ' + matNom + '. Pediles que usen /registrarme primero.');
+          const idsRegistrados = new Set(registros.keys());
+          const desPuntos = [...puntos.entries()].filter(([uid]) => !idsRegistrados.has(uid));
+          if (desPuntos.length) {
+            await interaction.editReply('No hay alumnos con /registrarme. Enviando a ' + desPuntos.length + ' alumnos que asistieron a clase...');
+            let env2 = 0, fall2 = 0;
+            for (const [uid, p] of desPuntos) {
+              try { const u = await client.users.fetch(uid); await u.send(msgDM); env2++; }
+              catch { fall2++; }
+              await new Promise(r => setTimeout(r, 300));
+            }
+            await interaction.editReply('Anuncio enviado a ' + env2 + ' alumnos.' + (fall2 > 0 ? ' No se pudo enviar a ' + fall2 + ' (DMs bloqueados).' : ''));
+            break;
+          }
+          await interaction.editReply('No hay alumnos registrados todavía. Pediles que usen /registrarme.');
           break;
         }
+
 
         await interaction.editReply('Enviando a ' + destinatarios.length + ' alumno' + (destinatarios.length!==1?'s':'') + ' de ' + matNom + '...');
 
