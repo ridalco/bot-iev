@@ -883,12 +883,12 @@ const commands = [
     .addStringOption(o => o.setName('mensaje').setDescription('Texto del anuncio o consigna').setRequired(true))
     .addIntegerOption(o => o.setName('dias').setDescription('Dias para la entrega (opcional)').setRequired(false).setMinValue(1).setMaxValue(30)),
   new SlashCommandBuilder().setName('nota')
-    .setDescription('👨‍🏫 Cargar una nota a un alumno')
-    .addStringOption(o => o.setName('nombre').setDescription('Nombre real del alumno (ej: Dominguez Dante)').setRequired(false))
-    .addUserOption(o => o.setName('alumno').setDescription('O seleccioná por @usuario Discord').setRequired(false))
+    .setDescription('Cargar una nota a un alumno')
     .addStringOption(o => o.setName('actividad').setDescription('Nombre del trabajo o parcial').setRequired(true))
     .addNumberOption(o => o.setName('calificacion').setDescription('Nota del 1 al 10').setRequired(true).setMinValue(1).setMaxValue(10))
-    .addStringOption(o => o.setName('observacion').setDescription('Observación opcional').setRequired(false)),
+    .addStringOption(o => o.setName('nombre').setDescription('Nombre real del alumno (ej: Dominguez)').setRequired(false))
+    .addUserOption(o => o.setName('alumno').setDescription('O selecciona por usuario Discord').setRequired(false))
+    .addStringOption(o => o.setName('observacion').setDescription('Observacion opcional').setRequired(false)),
   new SlashCommandBuilder().setName('misnotas').setDescription('Ver todas tus notas del cuatrimestre'),
   new SlashCommandBuilder().setName('notas-alumno')
     .setDescription('👨‍🏫 Ver todas las notas de un alumno')
