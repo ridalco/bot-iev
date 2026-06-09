@@ -275,7 +275,7 @@ const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
   'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
-  'nota','notas-alumno','boletin-notas'
+  'nota','notas-alumno','boletin-notas','anuncio'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -869,6 +869,19 @@ const commands = [
     .setDescription('Registrar presencia con el código del pizarrón (alternativa al GPS)')
     .addStringOption(o => o.setName('valor').setDescription('Código de 4 dígitos del pizarrón').setRequired(true).setMinLength(4).setMaxLength(4)),
   new SlashCommandBuilder().setName('ver-codigo').setDescription('👨‍🏫 Ver o regenerar el código del pizarrón de la clase actual'),
+  new SlashCommandBuilder().setName('anuncio')
+    .setDescription('👨‍🏫 Enviar anuncio o tarea por DM a alumnos de una materia')
+    .addStringOption(o => o.setName('materia').setDescription('Materia destino').setRequired(true)
+      .addChoices(
+        { name: 'Base de Datos - IES 11',   value: 'bd' },
+        { name: 'Informatica - IES 11',      value: 'informatica' },
+        { name: 'IEV - IES 6',              value: 'iev' },
+        { name: 'PP3 - IES 6',              value: 'practica' },
+        { name: 'PyBD - IES 6',             value: 'pybd' },
+        { name: 'Todos',                    value: 'todos' }
+      ))
+    .addStringOption(o => o.setName('mensaje').setDescription('Texto del anuncio o consigna').setRequired(true))
+    .addIntegerOption(o => o.setName('dias').setDescription('Dias para la entrega (opcional)').setRequired(false).setMinValue(1).setMaxValue(30)),
   new SlashCommandBuilder().setName('nota')
     .setDescription('👨‍🏫 Cargar una nota a un alumno')
     .addStringOption(o => o.setName('nombre').setDescription('Nombre real del alumno (ej: Dominguez Dante)').setRequired(false))
@@ -1985,6 +1998,60 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         msgB += '\n━━━━━━━━━━━━━━━━━━━━━━━━\nUsá /notas-alumno para el detalle.';
         await interaction.editReply(safe(msgB));
+        break;
+      }
+
+      case 'anuncio': {
+        const matSel  = interaction.options.getString('materia');
+        const mensaje = interaction.options.getString('mensaje');
+        const dias    = interaction.options.getInteger('dias');
+        const MNOMS   = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD', todos:'Todos' };
+        const matNom  = MNOMS[matSel] || matSel;
+
+        const fechaLimite = dias ? (() => {
+          const f = new Date(); f.setDate(f.getDate() + dias);
+          return f.toLocaleDateString('es-AR', { weekday:'long', day:'numeric', month:'long' });
+        })() : null;
+
+        const esEntrega = mensaje.toLowerCase().includes('entrega') || mensaje.toLowerCase().includes('practico') || mensaje.toLowerCase().includes('tp') || mensaje.toLowerCase().includes('docker');
+
+        const msgDM = [
+          '📢 **Anuncio — ' + (interaction.guild?.name||'IES') + '**',
+          '📚 **' + matNom + '**',
+          '━━━━━━━━━━━━━━━━━━━━━━━━',
+          '',
+          mensaje,
+          '',
+          fechaLimite ? ('⏰ **Fecha limite: ' + fechaLimite + '** (' + dias + ' dia' + (dias!==1?'s':'') + ')') : '',
+          esEntrega ? '📤 Entrega por el canal #entregas de tu materia en Discord.' : '',
+          '_Para consultas usa /preguntar o el canal de dudas._'
+        ].filter(Boolean).join('\n');
+
+        const MMAP = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD' };
+        const destinatarios = [...registros.entries()].filter(([uid, r]) => {
+          if (matSel === 'todos') return r.guildId === interaction.guildId;
+          return (r.materia === MMAP[matSel] || (r.materia||'').toLowerCase().includes(matSel)) && r.guildId === interaction.guildId;
+        });
+
+        if (!destinatarios.length) {
+          await interaction.editReply('No hay alumnos registrados en ' + matNom + '. Pediles que usen /registrarme primero.');
+          break;
+        }
+
+        await interaction.editReply('Enviando a ' + destinatarios.length + ' alumno' + (destinatarios.length!==1?'s':'') + ' de ' + matNom + '...');
+
+        let enviados = 0, fallidos = 0;
+        for (const [uid] of destinatarios) {
+          try { const u = await client.users.fetch(uid); await u.send(msgDM); enviados++; }
+          catch { fallidos++; }
+          await new Promise(r => setTimeout(r, 300));
+        }
+
+        await interaction.editReply(
+          'Anuncio enviado\n\nMateria: ' + matNom + '\nEnviado a: ' + enviados + ' alumno' + (enviados!==1?'s':'') +
+          (fallidos > 0 ? '\nNo se pudo enviar a ' + fallidos + ' (DMs bloqueados)' : '') +
+          (fechaLimite ? '\nFecha limite: ' + fechaLimite : '')
+        );
         break;
       }
 
