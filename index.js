@@ -1235,18 +1235,13 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     const sesion = getSesion(interaction.guildId);
     if (!sesion.activa) { await interaction.reply({ content: 'La clase ya terminó, no se puede registrar presencia.', ephemeral: true }); return; }
     const uid    = interaction.user.id;
-    const discordNombre = interaction.member?.displayName || interaction.user.username;
-    const nombre = getNombreReal(uid, discordNombre); // usa nombre real si está registrado
-    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: `${nombre}, ya marcaste presente.`, ephemeral: true }); return; }
-    const hora = horaAR();
-    sesion.asistentes.set(uid, { nombre, hora });
-    const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-    await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
-    const p   = darPuntos(uid, nombre, 'asistencia');
-    const rol = getRol(p.pts);
-    await actualizarRol(interaction.member, p.pts);
-    const sinRegistro = !registros.has(uid) ? '\n\n💡 *Tip: usá /registrarme para que tu nombre real aparezca en el registro.*' : '';
-    await interaction.reply({ content: `✅ **${nombre}** — presencia a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**${sinRegistro}` });
+    const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: nombre + ', ya marcaste presente.', ephemeral: true }); return; }
+    // NO registra presencia — pide el código del pizarrón
+    await interaction.reply({
+      content: '🔑 **Código requerido**\n\nPara registrar tu presencia necesitás el código de 4 dígitos que el profesor escribió en el pizarrón.\n\nEscribí el comando:\n`/codigo valor:XXXX`\n\n_Reemplazá XXXX por el código del pizarrón. Si no lo ves, pediselo al profesor._',
+      ephemeral: true
+    });
     return;
   }
 
