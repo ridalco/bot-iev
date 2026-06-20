@@ -631,13 +631,20 @@ function getNombreReal(userId, fallback) {
 }
 
 async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
-  try {
-    const sheets = await getSheets();
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F', valueInputOption: 'USER_ENTERED',
-      resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] }
-    });
-  } catch (e) { LOG.error('Error guardando asistencia en Sheets', e); }
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const sheets = await getSheets();
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F', valueInputOption: 'USER_ENTERED',
+        resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] }
+      });
+      return true; // éxito
+    } catch (e) {
+      LOG.error(`Error guardando asistencia en Sheets (intento ${intento}/3)`, e);
+      if (intento < 3) await new Promise(r => setTimeout(r, 1000 * intento));
+    }
+  }
+  return false; // falló las 3 veces — pero la asistencia ya está en memoria (sesion.asistentes)
 }
 
 async function guardarNotaSheets(nombreAlumno, materia, actividad, nota, observacion, servidor) {
@@ -2144,6 +2151,20 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           (fallidos > 0 ? '\nNo se pudo enviar a ' + fallidos + ' (DMs bloqueados)' : '') +
           (fechaLimite ? '\nFecha limite: ' + fechaLimite + '\n📌 Les voy a recordar 24h antes de vencer.' : '')
         );
+        break;
+      }
+
+      case 'ver-codigo': {
+        const s = getSesion(interaction.guildId);
+        if (!s.activa) { await interaction.editReply('No hay ninguna clase activa. Iniciá una con /iniciar-clase.'); break; }
+        if (!s.codigoClase) s.codigoClase = Math.floor(1000 + Math.random() * 9000).toString();
+        try {
+          const prof = await interaction.client.users.fetch(interaction.user.id);
+          await prof.send('🔑 **Código de clase — ' + (s.titulo||'Clase activa') + '**\n📅 ' + s.fecha + ' | 🏫 ' + (interaction.guild?.name||'') + '\n\nCódigo del pizarrón:\n\n> **' + s.codigoClase + '**\n\n_Solo para vos. Expira cuando cerrés la clase._');
+          await interaction.editReply('✅ Te envié el código por DM. Revisá tus mensajes privados.');
+        } catch {
+          await interaction.editReply('🔑 Código del pizarrón: **' + s.codigoClase + '**\n\n_No pude enviarte el DM, pero solo vos ves este mensaje._');
+        }
         break;
       }
 
