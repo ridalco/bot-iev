@@ -89,28 +89,21 @@ http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const data     = JSON.parse(body);
-        const { token, uid, guildId, nombre, distancia, lat, lng } = data;
+        const { nombre, distancia } = data;
 
-        // Validar que hay sesión activa en ese servidor
-        const sesion = sesiones.get(guildId);
-        if (!sesion || !sesion.activa) {
+        // Verificar que haya AL MENOS una clase activa en algún servidor
+        const hayClaseActiva = [...sesiones.values()].some(s => s.activa);
+        if (!hayClaseActiva) {
           res.writeHead(400, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ ok: false, error: 'No hay clase activa en este servidor.' }));
-          return;
-        }
-
-        // Verificar que el alumno no marcó ya
-        if (sesion.asistentes.has(uid)) {
-          res.writeHead(200, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ ok: false, error: 'Ya registraste tu presencia en esta clase.' }));
+          res.end(JSON.stringify({ ok: false, error: 'No hay ninguna clase activa en este momento. Pedile al profesor que inicie la clase.' }));
           return;
         }
 
         // Generar código de confirmación único de 6 caracteres
+        // La validación real (quién es, qué servidor) la hace /confirmar con datos de Discord
         const codigo = Math.random().toString(36).substring(2, 8).toUpperCase();
         codigosGPS.set(codigo, {
-          uid, guildId,
-          nombre: decodeURIComponent(nombre || uid),
+          nombre: decodeURIComponent(nombre || ''),
           distancia: Math.round(distancia),
           expira: Date.now() + 10 * 60 * 1000, // 10 minutos para confirmar
           usado: false
@@ -250,6 +243,26 @@ const HORARIOS_CLASE    = [{ dia: 2, hora: 8, min: 0 }, { dia: 4, hora: 8, min: 
 function safe(texto, max = 1900) {
   if (!texto) return '—';
   return texto.length > max ? texto.substring(0, max) + '\n…*(respuesta truncada)*' : texto;
+}
+
+// Enviar respuesta larga dividida en varios mensajes de Discord (límite 2000)
+async function enviarLargo(interaction, texto, encabezado = '') {
+  const MAX = 1900;
+  if (texto.length <= MAX) { await interaction.editReply(encabezado + texto); return; }
+  const lineas = texto.split('\n');
+  const bloques = [];
+  let actual = '';
+  for (const linea of lineas) {
+    if ((actual + linea + '\n').length > MAX) { bloques.push(actual); actual = ''; }
+    actual += linea + '\n';
+  }
+  if (actual) bloques.push(actual);
+  // Primer bloque con editReply, el resto con followUp
+  await interaction.editReply(encabezado + bloques[0]);
+  for (let i = 1; i < bloques.length; i++) {
+    await interaction.followUp(bloques[i]);
+    await new Promise(r => setTimeout(r, 300));
+  }
 }
 
 /** Verifica cooldown — retorna segundos restantes (0 = puede usar) */
@@ -1615,7 +1628,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         if (futuros.length) msg += '**Próximos:**\n\n' + fmtEventos(futuros);
         if (pasados.length) msg += '\n\n**Pasados:**\n\n' + fmtEventos(pasados);
         if (!lista.length)  msg += 'No hay eventos. El profesor puede agregar con /evento';
-        await interaction.editReply(safe(msg));
+        await enviarLargo(interaction, msg);
         break;
       }
 
@@ -1754,7 +1767,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         let msg = '🔍 **Entregas por actividad:**\n\n';
         for (const [act, lista] of entregasPorActiv.entries())
           msg += `📚 **${act}** — ${lista.length} entrega${lista.length!==1?'s':''}\n${lista.map(e=>`  · ${e.nombre} (${e.hora})`).join('\n')}\n\n`;
-        await interaction.editReply(safe(msg));
+        await enviarLargo(interaction, msg);
         break;
       }
 
@@ -1778,11 +1791,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         if (Date.now() > datos.expira) {
           codigosGPS.delete(codigo);
-          await interaction.editReply('El código expiró. Abrí el link de asistencia de nuevo y verificá tu ubicación.');
-          break;
-        }
-        if (datos.guildId !== interaction.guildId) {
-          await interaction.editReply('Este código no corresponde a este servidor.');
+          await interaction.editReply('El código expiró (dura 10 minutos). Abrí el link de nuevo y verificá tu ubicación.');
           break;
         }
         if (sesion.asistentes.has(uid)) {
@@ -2023,7 +2032,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         const pf2 = c2>0?Math.round(s2/c2*10)/10:0;
         msg2 += '━━━━━━━━━━━━━━━━━━━━━━━━\n'+notaEmoji(pf2)+' **Promedio general: '+pf2+'/10** — '+notaConceptual(pf2);
-        await interaction.editReply(safe(msg2));
+        await enviarLargo(interaction, msg2);
         break;
       }
 
@@ -2045,7 +2054,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         const pf3 = c3>0?Math.round(s3/c3*10)/10:0;
         msg3 += '━━━━━━━━━━━━━━━━━━━━━━━━\n'+notaEmoji(pf3)+' **Promedio: '+pf3+'/10**';
-        await interaction.editReply(safe(msg3));
+        await enviarLargo(interaction, msg3);
         break;
       }
 
@@ -2059,7 +2068,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           msgB += notaEmoji(pr)+' **'+nom+'** — '+pr+'/10 ('+lista.length+' actividad'+(lista.length!==1?'es':'')+')'+'\n';
         }
         msgB += '\n━━━━━━━━━━━━━━━━━━━━━━━━\nUsá /notas-alumno para el detalle.';
-        await interaction.editReply(safe(msgB));
+        await enviarLargo(interaction, msgB);
         break;
       }
 
@@ -2223,7 +2232,8 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         });
 
         tabla += '────────────────────────────────────\nTotal: ' + alumnos.length + ' alumnos';
-        await interaction.editReply('📋 **Planilla lista para copiar:**\n```\n' + tabla + '\n```');
+        const tablaFinal = tabla.length > 1850 ? tabla.substring(0, 1850) + '\n... (ver lista completa en el dashboard)' : tabla;
+        await interaction.editReply('📋 **Planilla lista para copiar:**\n```\n' + tablaFinal + '\n```');
         break;
       }
 
@@ -2257,7 +2267,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
         msg += '\n━━━━━━━━━━━━━━━━━━━━━━━━\n🟢 Promocionan: ' + prom + ' · 🟡 Regulares: ' + reg + ' · 🔴 Libres: ' + lib;
         msg += '\n\n_Criterios: Promociona (8+ y 80% asist) · Regular (6+ y 60%) · Libre (resto)_';
-        await interaction.editReply(safe(msg));
+        await enviarLargo(interaction, msg);
         break;
       }
 
@@ -2469,7 +2479,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
             return (i+1) + '. **' + a.nombre + '** (@' + discord + ') — Notas: ' + nProm + ' · Pts: ' + (p?.pts||0);
           });
           const msg = '👥 **Clase ' + tituloC + '** — ' + presentes.length + ' presentes\nUsá el @apodo para /nota\n\n' + lineas.join('\n');
-          await interaction.editReply(safe(msg));
+          await enviarLargo(interaction, msg);
         } else {
           // Sin clase reciente — todos los del servidor
           const todos = [...registros.entries()].filter(([,r]) => r.guildId === interaction.guildId);
@@ -2483,7 +2493,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
             return (i+1) + '. **' + r.nombreReal + '** (@' + (r.discordUser||'?') + ')' + sem + ' — Notas: ' + nProm;
           });
           const msg = '👥 **Todos los alumnos (' + todos.length + ')**\nIniciá una clase para ver solo los de hoy\n\n' + lineas.join('\n');
-          await interaction.editReply(safe(msg));
+          await enviarLargo(interaction, msg);
         }
         break;
       }
