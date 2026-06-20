@@ -166,6 +166,8 @@ function cargarDatos() {
     if (raw.eventoCounter)   eventoCounter   = raw.eventoCounter;
     if (raw.clasesTotales)   for (const [k, v] of Object.entries(raw.clasesTotales)) clasesTotales.set(k, v);
     if (raw.notas)           for (const [k, v] of Object.entries(raw.notas))          notas.set(k, v);
+    if (raw.anunciosActivos) for (const [k, v] of Object.entries(raw.anunciosActivos)) anunciosActivos.set(k, v);
+    if (raw.anuncioCounter)  anuncioCounter = raw.anuncioCounter;
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
         sesiones.set(gid, {
@@ -197,6 +199,8 @@ function guardarDatos() {
         registros:    Object.fromEntries(registros),
         clasesTotales: Object.fromEntries(clasesTotales),
         notas:         Object.fromEntries(notas),
+        anunciosActivos: Object.fromEntries(anunciosActivos),
+        anuncioCounter: anuncioCounter,
         sesionActiva:  Object.fromEntries([...sesiones.entries()].map(([gid, s]) => [gid, {
           activa:               s.activa,
           asistentes:           s.asistentes ? Object.fromEntries(s.asistentes) : {},
@@ -225,6 +229,8 @@ function guardarDatos() {
 const sesiones          = new Map(); // guildId → { activa, asistentes, fecha, preguntas }
 const clasesTotales     = new Map(); // guildId → número de clases dictadas
 const notas             = new Map(); // userId → [{ materia, actividad, nota, fecha, guildId, observacion }]
+const anunciosActivos   = new Map(); // id → { materia, mensaje, fechaLimite, guildId, recordatorioEnviado, destinatarios: [] }
+let anuncioCounter      = 1;
 const formularioActivo  = new Map(); // userId  → { paso, nombre, actividad, link, comentario, expira }
 const cooldowns         = new Map(); // userId  → timestamp
 const quizActivo        = new Map(); // userId  → { pregunta, opciones, correcta, explicacion, unidad, respondido }
@@ -275,7 +281,7 @@ const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
   'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
-  'nota','notas-alumno','boletin-notas','anuncio'
+  'nota','notas-alumno','boletin-notas','anuncio','asignar-materia','exportar','cierre'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -894,6 +900,9 @@ const commands = [
     .setDescription('👨‍🏫 Ver todas las notas de un alumno')
     .addUserOption(o => o.setName('alumno').setDescription('Alumno a consultar').setRequired(true)),
   new SlashCommandBuilder().setName('boletin-notas').setDescription('👨‍🏫 Ver boletín completo de todos los alumnos'),
+  new SlashCommandBuilder().setName('asignar-materia').setDescription('👨‍🏫 Asignar la materia de este servidor a los alumnos presentes/registrados'),
+  new SlashCommandBuilder().setName('exportar').setDescription('👨‍🏫 Exportar planilla de asistencia y notas para copiar'),
+  new SlashCommandBuilder().setName('cierre').setDescription('👨‍🏫 Informe final de cuatrimestre por alumno (asistencia, notas, condición)'),
   new SlashCommandBuilder().setName('confirmar')
     .setDescription('Confirmar presencia con el código GPS de la página web')
     .addStringOption(o => o.setName('codigo').setDescription('Código de 6 caracteres que te dio la página').setRequired(true).setMinLength(6).setMaxLength(6)),
@@ -958,6 +967,48 @@ client.once(Events.ClientReady, async (c) => {
     for (const [k, v] of codigosGPS.entries())
       if (ahora > v.expira || v.usado) codigosGPS.delete(k);
   }, 5 * 60 * 1000);
+
+  // Renovar código del pizarrón cada 10 minutos en clases activas
+  setInterval(async () => {
+    for (const [gid, s] of sesiones.entries()) {
+      if (!s.activa) continue;
+      s.codigoClase = Math.floor(1000 + Math.random() * 9000).toString();
+      s.codigoRenovadoEn = Date.now();
+      // Avisar al profesor del nuevo código
+      if (PROFESOR_ID) {
+        try {
+          const prof = await client.users.fetch(PROFESOR_ID);
+          await prof.send('🔄 **Código renovado** — ' + (s.titulo||'Clase') + '\n\nNuevo código del pizarrón:\n\n> **' + s.codigoClase + '**\n\nActualizá el pizarrón. El código anterior ya no funciona.');
+        } catch {}
+      }
+    }
+    guardarDatos();
+  }, 10 * 60 * 1000);
+
+  // Recordatorio de entregas próximas a vencer (cada hora)
+  setInterval(async () => {
+    const ahora = Date.now();
+    for (const [id, anuncio] of anunciosActivos.entries()) {
+      if (anuncio.recordatorioEnviado) continue;
+      if (!anuncio.fechaLimiteTs) continue;
+      const horasRestantes = (anuncio.fechaLimiteTs - ahora) / (1000 * 60 * 60);
+      if (horasRestantes <= 24 && horasRestantes > 0) {
+        // Enviar recordatorio a destinatarios
+        for (const uid of (anuncio.destinatarios || [])) {
+          try {
+            const u = await client.users.fetch(uid);
+            await u.send('🔔 **Recordatorio de entrega**\n\nMañana vence:\n📚 ' + anuncio.mensaje.substring(0,120) + '\n\n📤 Entregalo en el canal #entregas de tu materia.\n_Si ya lo entregaste, ignorá este mensaje._');
+            await new Promise(r => setTimeout(r, 300));
+          } catch {}
+        }
+        anuncio.recordatorioEnviado = true;
+        anunciosActivos.set(id, anuncio);
+        guardarDatos();
+      }
+      // Limpiar anuncios vencidos hace más de 2 días
+      if (horasRestantes < -48) anunciosActivos.delete(id);
+    }
+  }, 60 * 60 * 1000);
   // Backup Sheets domingos 22hs
   setInterval(async () => {
     const { dia, hora, min } = fechaHoraAR();
@@ -2068,11 +2119,115 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           await new Promise(r => setTimeout(r, 300));
         }
 
+        // Guardar anuncio para recordatorio automático
+        if (dias) {
+          const fts = new Date(); fts.setDate(fts.getDate() + dias);
+          anunciosActivos.set(String(anuncioCounter++), {
+            materia: matNom, mensaje, fechaLimite, fechaLimiteTs: fts.getTime(),
+            guildId: interaction.guildId, recordatorioEnviado: false,
+            destinatarios: destinatarios.map(([uid]) => uid)
+          });
+          guardarDatos();
+        }
+
         await interaction.editReply(
           'Anuncio enviado\n\nMateria: ' + matNom + '\nEnviado a: ' + enviados + ' alumno' + (enviados!==1?'s':'') +
           (fallidos > 0 ? '\nNo se pudo enviar a ' + fallidos + ' (DMs bloqueados)' : '') +
-          (fechaLimite ? '\nFecha limite: ' + fechaLimite : '')
+          (fechaLimite ? '\nFecha limite: ' + fechaLimite + '\n📌 Les voy a recordar 24h antes de vencer.' : '')
         );
+        break;
+      }
+
+      case 'asignar-materia': {
+        const mat   = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOM  = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const matN  = MNOM[mat] || mat;
+        let asignados = 0;
+
+        // Asignar a presentes de la última clase
+        const s = getSesion(interaction.guildId);
+        const presentes = s.presentesUltimaClase || [];
+        for (const a of presentes) {
+          if (!registros.has(a.uid)) {
+            registros.set(a.uid, { nombreReal: a.nombre, discordUser: a.nombre, materia: matN, guildId: interaction.guildId, registradoEn: ahoraAR() });
+          } else {
+            const r = registros.get(a.uid); r.materia = matN; r.guildId = interaction.guildId; registros.set(a.uid, r);
+          }
+          asignados++;
+        }
+
+        // También asignar a todos los registrados de ese servidor sin materia
+        for (const [uid, r] of registros.entries()) {
+          if (r.guildId === interaction.guildId && !r.materia) {
+            r.materia = matN; registros.set(uid, r); asignados++;
+          }
+        }
+
+        guardarDatos();
+        await interaction.editReply('✅ Materia **' + matN + '** asignada a ' + asignados + ' alumno' + (asignados!==1?'s':'') + '.\n\nAhora /anuncio y /alumnos van a filtrar correctamente por esta materia.');
+        break;
+      }
+
+      case 'exportar': {
+        const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const matN = MNOM[mat] || mat;
+        const totalCl = clasesTotales.get(interaction.guildId) || 0;
+
+        const alumnos = [...registros.entries()].filter(([,r]) => r.guildId === interaction.guildId && (r.materia === matN || !r.materia));
+        if (!alumnos.length) { await interaction.editReply('No hay alumnos en ' + matN + '. Usá /asignar-materia primero.'); break; }
+
+        let tabla = 'PLANILLA — ' + matN + ' (' + interaction.guild?.name + ')\n';
+        tabla += 'Generado: ' + fechaAR() + ' | Clases dictadas: ' + totalCl + '\n';
+        tabla += '────────────────────────────────────\n';
+        tabla += 'N°  ALUMNO | ASIST | % | NOTA PROM\n';
+        tabla += '────────────────────────────────────\n';
+
+        alumnos.forEach(([uid, r], i) => {
+          const p   = puntos.get(uid);
+          const nAl = notas.get(uid) || [];
+          const asi = p?.asistencias || 0;
+          const pct = totalCl > 0 ? Math.round(asi/totalCl*100) : 0;
+          const np  = nAl.length ? (Math.round(nAl.reduce((s,n)=>s+n.nota,0)/nAl.length*10)/10) : '-';
+          tabla += (i+1) + '. ' + r.nombreReal + ' | ' + asi + '/' + totalCl + ' | ' + pct + '% | ' + np + '\n';
+        });
+
+        tabla += '────────────────────────────────────\nTotal: ' + alumnos.length + ' alumnos';
+        await interaction.editReply('📋 **Planilla lista para copiar:**\n```\n' + tabla + '\n```');
+        break;
+      }
+
+      case 'cierre': {
+        const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
+        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const matN = MNOM[mat] || mat;
+        const totalCl = clasesTotales.get(interaction.guildId) || 0;
+        if (totalCl === 0) { await interaction.editReply('Todavía no hay clases dictadas para generar el cierre.'); break; }
+
+        const alumnos = [...registros.entries()].filter(([,r]) => r.guildId === interaction.guildId && (r.materia === matN || !r.materia));
+        if (!alumnos.length) { await interaction.editReply('No hay alumnos en ' + matN + '. Usá /asignar-materia primero.'); break; }
+
+        let msg = '🎓 **CIERRE DE CUATRIMESTRE — ' + matN + '**\n' + interaction.guild?.name + ' · ' + fechaAR() + '\n';
+        msg += 'Clases dictadas: ' + totalCl + '\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+
+        let reg=0, lib=0, prom=0;
+        for (const [uid, r] of alumnos) {
+          const p    = puntos.get(uid);
+          const nAl  = notas.get(uid) || [];
+          const asi  = p?.asistencias || 0;
+          const pct  = totalCl > 0 ? Math.round(asi/totalCl*100) : 0;
+          const np   = nAl.length ? (Math.round(nAl.reduce((s,n)=>s+n.nota,0)/nAl.length*10)/10) : 0;
+          // Condición: Promociona 8+ y 80% asist | Regular 6+ y 60% | Libre resto
+          let cond, emoji;
+          if (np >= 8 && pct >= 80) { cond='Promociona'; emoji='🟢'; prom++; }
+          else if (np >= 6 && pct >= 60) { cond='Regular'; emoji='🟡'; reg++; }
+          else { cond='Libre'; emoji='🔴'; lib++; }
+          msg += emoji + ' **' + r.nombreReal + '** — ' + pct + '% asist · ' + (np||'s/n') + '/10 · **' + cond + '**\n';
+        }
+
+        msg += '\n━━━━━━━━━━━━━━━━━━━━━━━━\n🟢 Promocionan: ' + prom + ' · 🟡 Regulares: ' + reg + ' · 🔴 Libres: ' + lib;
+        msg += '\n\n_Criterios: Promociona (8+ y 80% asist) · Regular (6+ y 60%) · Libre (resto)_';
+        await interaction.editReply(safe(msg));
         break;
       }
 
