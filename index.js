@@ -170,8 +170,10 @@ function cargarDatos() {
     if (raw.anuncioCounter)  anuncioCounter = raw.anuncioCounter;
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
+        // Cerrar sesiones que quedaron activas de días anteriores (fantasma)
+        const esVieja = s.tokenTs && (Date.now() - s.tokenTs) > 4 * 60 * 60 * 1000;
         sesiones.set(gid, {
-          activa:               s.activa || false,
+          activa:               esVieja ? false : (s.activa || false),
           asistentes:           new Map(Object.entries(s.asistentes || {})),
           fecha:                s.fecha || '',
           titulo:               s.titulo || 'Clase',
@@ -968,13 +970,20 @@ client.once(Events.ClientReady, async (c) => {
       if (ahora > v.expira || v.usado) codigosGPS.delete(k);
   }, 5 * 60 * 1000);
 
-  // Renovar código del pizarrón cada 10 minutos en clases activas
+  // Renovar código del pizarrón cada 10 minutos SOLO en clases realmente activas
   setInterval(async () => {
+    let huboRenovacion = false;
     for (const [gid, s] of sesiones.entries()) {
       if (!s.activa) continue;
+      if (!s.fecha) continue;
+      // Sesión fantasma: lleva más de 4 horas activa sin cerrar — cerrarla
+      if (s.tokenTs && (Date.now() - s.tokenTs) > 4 * 60 * 60 * 1000) {
+        s.activa = false;
+        continue;
+      }
       s.codigoClase = Math.floor(1000 + Math.random() * 9000).toString();
       s.codigoRenovadoEn = Date.now();
-      // Avisar al profesor del nuevo código
+      huboRenovacion = true;
       if (PROFESOR_ID) {
         try {
           const prof = await client.users.fetch(PROFESOR_ID);
@@ -982,7 +991,7 @@ client.once(Events.ClientReady, async (c) => {
         } catch {}
       }
     }
-    guardarDatos();
+    if (huboRenovacion) guardarDatos();
   }, 10 * 60 * 1000);
 
   // Recordatorio de entregas próximas a vencer (cada hora)
