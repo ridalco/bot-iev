@@ -500,7 +500,7 @@ function similitudJaccard(t1, t2) {
 
 async function analizarPlagioIA(actividad, n1, c1, n2, c2, sim) {
   try {
-    const r = await anthropic.messages.create({
+    const r = await llamarIA({
       model: 'claude-sonnet-4-20250514', max_tokens: 350,
       messages: [{ role: 'user', content:
         `Analizá si hay copia entre estas entregas de "${actividad}".\n${n1}: ${c1.substring(0,600)}\n${n2}: ${c2.substring(0,600)}\nJSON: {"similitud_real":0-100,"veredicto":"Copia evidente|Muy similar|Colaboración|Coincidencia","detalle":"1 oración"}`
@@ -621,8 +621,22 @@ const IA_MAX  = 3;
 async function llamarIA(params) {
   while (iaActivas >= IA_MAX) await new Promise(r => setTimeout(r, 500));
   iaActivas++;
-  try { return await anthropic.messages.create(params); }
-  finally { iaActivas--; }
+  try {
+    // Reintentar hasta 3 veces si hay error de red (Premature close, 404/529 temporal)
+    for (let intento = 1; intento <= 3; intento++) {
+      try {
+        return await anthropic.messages.create(params);
+      } catch (e) {
+        const recuperable = e.status === 404 || e.status === 429 || e.status === 500 || e.status === 502 || e.status === 503 || e.status === 529 || (e.message && e.message.includes('Premature close'));
+        if (intento < 3 && recuperable) {
+          LOG.warn(`API falló (intento ${intento}/3), reintentando...`);
+          await new Promise(r => setTimeout(r, 1500 * intento));
+          continue;
+        }
+        throw e;
+      }
+    }
+  } finally { iaActivas--; }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -736,15 +750,22 @@ function fmtEventos(lista) {
 async function publicarNoticias(guild) {
   const canal = guild.channels.cache.find(c => c.name === CANAL_NOTICIAS);
   if (!canal) return;
-  try {
-    const r = await anthropic.messages.create({
-      model: 'claude-sonnet-4-20250514', max_tokens: 1000,
-      messages: [{ role: 'user', content:
-        `Generá 3 noticias tech para estudiantes de Informática en Argentina. Temas: IA, redes, ciberseguridad, educación virtual.\nFormato:\n**🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa para tu carrera: [explicación]*\n\nSeparalas con una línea. Hoy: ${fechaAR()}.`
-      }]
-    });
-    await canal.send(safe(`📰 **NOTICIAS TECH — ${fechaAR()}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`));
-  } catch (e) { LOG.error('Error publicando noticias', e); }
+  // Reintentar hasta 2 veces si la API falla (Premature close, 404 temporal)
+  for (let intento = 1; intento <= 2; intento++) {
+    try {
+      const r = await llamarIA({
+        model: 'claude-sonnet-4-20250514', max_tokens: 1000,
+        messages: [{ role: 'user', content:
+          `Generá 3 noticias tech para estudiantes de Informática en Argentina. Temas: IA, redes, ciberseguridad, educación virtual.\nFormato:\n**🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa para tu carrera: [explicación]*\n\nSeparalas con una línea. Hoy: ${fechaAR()}.`
+        }]
+      });
+      await canal.send(safe(`📰 **NOTICIAS TECH — ${fechaAR()}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`));
+      return; // éxito
+    } catch (e) {
+      LOG.error(`Error publicando noticias (intento ${intento}/2)`, e);
+      if (intento < 2) await new Promise(r => setTimeout(r, 2000));
+    }
+  }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1210,7 +1231,7 @@ client.on(Events.MessageCreate, async (msg) => {
     if (!pregunta) return;
     try {
       await msg.channel.sendTyping();
-      const r = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${getContexto(msg.guildId, msg.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+      const r = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${getContexto(msg.guildId, msg.channel?.name)}\n\nPregunta: ${pregunta}` }] });
       await msg.reply(safe(`🤖 ${r.content[0].text}`));
       const s = getSesion(msg.guildId);
       if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: msg.member?.displayName||msg.author.username });
@@ -1547,7 +1568,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'craap': {
         const url = interaction.options.getString('url');
-        const r   = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá 1-5 cada dimensión y dá conclusión final.` }] });
+        const r   = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá 1-5 cada dimensión y dá conclusión final.` }] });
         await interaction.editReply(safe(`🔍 **CRAAP: \`${url}\`**\n\n${r.content[0].text}`));
         break;
       }
@@ -1652,7 +1673,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const unum = interaction.options.getInteger('unidad');
         const uid  = interaction.user.id;
         await interaction.editReply('🧠 Generando pregunta...');
-        const r = await anthropic.messages.create({
+        const r = await llamarIA({
           model: 'claude-sonnet-4-20250514', max_tokens: 500,
           messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nGenerá UNA pregunta de opción múltiple sobre la Unidad ${unum}. SOLO JSON sin markdown: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
         });
@@ -1671,7 +1692,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'desafio': {
         const mat = interaction.options.getString('materia').toLowerCase();
         await interaction.editReply('⏳ Generando desafio...');
-        const r  = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
+        const r  = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
         const id = desafioCounter++;
         desafioActivo = id;
         desafios.set(id, { enunciado: r.content[0].text, materia: mat, soluciones: new Map() });
@@ -1691,7 +1712,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const p  = darPuntos(uid, nombre, 'entrega');
         const p2 = darPuntos(uid, nombre, 'pregunta');
         await actualizarRol(interaction.member, p2.pts);
-        const ev = await anthropic.messages.create({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
+        const ev = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
         await interaction.editReply(safe(`✅ **${nombre}** — solución registrada.\n\n🤖 ${ev.content[0].text}\n\n📤 +25 pts | Total: **${p2.pts} pts**`));
         break;
       }
