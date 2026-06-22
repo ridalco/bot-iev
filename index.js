@@ -121,6 +121,13 @@ http.createServer(async (req, res) => {
                 const u = await client.users.fetch(uid);
                 await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts');
               } catch {}
+              // Publicar en el canal de la clase
+              try {
+                if (sesion.canalId) {
+                  const canal = client.channels.cache.get(sesion.canalId);
+                  if (canal) await canal.send('✅ **' + nombreReal + '** marcó presencia — ' + hora + ' (📍 ' + Math.round(distancia) + 'm)');
+                }
+              } catch {}
             } catch (e) { LOG.error('Error registro automático GPS', e); }
           })();
           res.writeHead(200, {'Content-Type': 'application/json'});
@@ -207,6 +214,7 @@ function cargarDatos() {
           preguntas:            s.preguntas || [],
           codigoClase:          s.codigoClase || '',
           tokenTs:              s.tokenTs || 0,
+          canalId:              s.canalId || '',
           presentesUltimaClase: s.presentesUltimaClase || [],
           fechaUltimaClase:     s.fechaUltimaClase || '',
         });
@@ -847,6 +855,7 @@ async function iniciarClase(channel, titulo, guildId) {
   s.linkBase   = linkBase;
   s.linkParams = linkParams;
   s.tokenTs    = Date.now();
+  s.canalId    = channel.id;
 
   // Mensaje público en el canal — SIN el código
   await channel.send({
