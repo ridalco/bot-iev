@@ -89,18 +89,52 @@ http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const data     = JSON.parse(body);
-        const { nombre, distancia } = data;
+        const { nombre, distancia, uid, guildId, auto } = data;
 
-        // Verificar que haya AL MENOS una clase activa en algún servidor
-        const hayClaseActiva = [...sesiones.values()].some(s => s.activa);
-        if (!hayClaseActiva) {
-          res.writeHead(400, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ ok: false, error: 'No hay ninguna clase activa en este momento. Pedile al profesor que inicie la clase.' }));
+        // ── MODO AUTOMÁTICO: viene uid y guildId reales desde el link personalizado ──
+        if (auto && uid && guildId) {
+          const sesion = sesiones.get(guildId);
+          if (!sesion || !sesion.activa) {
+            res.writeHead(400, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({ ok: false, error: 'No hay clase activa en este momento.' }));
+            return;
+          }
+          if (sesion.asistentes.has(uid)) {
+            res.writeHead(200, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({ ok: true, yaRegistrado: true, mensaje: 'Ya tenías tu presencia registrada.' }));
+            return;
+          }
+          // Registrar presencia AUTOMÁTICAMENTE
+          const nombreReal = decodeURIComponent(nombre || uid);
+          const hora = horaAR();
+          sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia: Math.round(distancia) });
+          // Guardar en Sheets y puntos (async, no bloquea la respuesta)
+          (async () => {
+            try {
+              const mat = 'iev'; // se detecta mejor con el canal, pero acá usamos genérico
+              await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, '');
+              const p = darPuntos(uid, nombreReal, 'asistencia');
+              if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: nombreReal, guildId, registradoEn: ahoraAR() });
+              guardarDatos();
+              // Avisar al alumno por DM
+              try {
+                const u = await client.users.fetch(uid);
+                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts');
+              } catch {}
+            } catch (e) { LOG.error('Error registro automático GPS', e); }
+          })();
+          res.writeHead(200, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ ok: true, registrado: true, nombre: nombreReal, distancia: Math.round(distancia), mensaje: 'Presencia registrada automáticamente.' }));
           return;
         }
 
-        // Generar código de confirmación único de 6 caracteres
-        // La validación real (quién es, qué servidor) la hace /confirmar con datos de Discord
+        // ── MODO CÓDIGO (fallback): genera código de 6 letras ──
+        const hayClaseActiva = [...sesiones.values()].some(s => s.activa);
+        if (!hayClaseActiva) {
+          res.writeHead(400, {'Content-Type': 'application/json'});
+          res.end(JSON.stringify({ ok: false, error: 'No hay ninguna clase activa en este momento.' }));
+          return;
+        }
         const codigo = Math.random().toString(36).substring(2, 8).toUpperCase();
         codigosGPS.set(codigo, {
           nombre: decodeURIComponent(nombre || ''),
@@ -820,13 +854,12 @@ async function iniciarClase(channel, titulo, guildId) {
       `📋 **ASISTENCIA — ${s.titulo}**\n` +
       `📅 **${s.fecha}** | 🕐 **${horaAR()}** | ⏰ Expira en **20 minutos**\n\n` +
       `Para registrar tu presencia:\n` +
-      `1️⃣ Hacé clic en **Registrar presencia** con tu celular o PC del colegio\n` +
-      `2️⃣ Activá la ubicación cuando el navegador lo pida\n` +
-      `3️⃣ La página te va a dar un código de 6 letras — ingresalo con \`/confirmar\`\n\n` +
+      `1️⃣ Hacé clic en **📍 Registrar presencia** acá abajo\n` +
+      `2️⃣ Se abre una página — activá la ubicación cuando lo pida\n` +
+      `3️⃣ Si estás en el instituto, tu presencia se registra sola ✅\n\n` +
       `Si no podés usar el GPS, pedile el código del pizarrón al profesor y usá \`/codigo\`.`,
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Link)
-        .setURL(`${linkBase}?token=${s.tokenTs}_abc&uid=__UID__&guild=${encodeURIComponent(guildName)}&clase=${encodeURIComponent(s.titulo)}`),
+      new ButtonBuilder().setCustomId('gps_link').setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId('presente').setLabel('🔑 Tengo código del pizarrón').setStyle(ButtonStyle.Secondary)
     )]
   });
@@ -1332,6 +1365,26 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
   }
 
   // ── BOTÓN: Presente ──
+  // ── BOTÓN: Registrar presencia GPS — genera link personalizado con UID real ──
+  if (interaction.isButton() && interaction.customId === 'gps_link') {
+    const sesion = getSesion(interaction.guildId);
+    if (!sesion.activa) { await interaction.reply({ content: 'La clase ya terminó.', ephemeral: true }); return; }
+    const uid    = interaction.user.id;
+    const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+    if (sesion.asistentes.has(uid)) { await interaction.reply({ content: nombre + ', ya marcaste presente.', ephemeral: true }); return; }
+
+    // Link personalizado con el UID y guildId REALES de Discord
+    const guildName = encodeURIComponent(interaction.guild?.name || '');
+    const nombreEnc = encodeURIComponent(nombre);
+    const link = `https://aulasvirtuales.name/presencia.html?uid=${uid}&guildId=${interaction.guildId}&guild=${guildName}&nombre=${nombreEnc}&clase=${encodeURIComponent(sesion.titulo||'Clase')}&auto=1`;
+
+    await interaction.reply({
+      content: '📍 **Registrá tu presencia**\n\nAbrí este link desde tu celular o PC del colegio:\n' + link + '\n\nActivá la ubicación cuando lo pida. Si estás en el instituto, tu presencia se registra sola.',
+      ephemeral: true
+    });
+    return;
+  }
+
   if (interaction.isButton() && interaction.customId === 'presente') {
     const sesion = getSesion(interaction.guildId);
     if (!sesion.activa) { await interaction.reply({ content: 'La clase ya terminó, no se puede registrar presencia.', ephemeral: true }); return; }
