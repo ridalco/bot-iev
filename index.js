@@ -89,7 +89,7 @@ http.createServer(async (req, res) => {
     req.on('end', () => {
       try {
         const data     = JSON.parse(body);
-        const { nombre, distancia, uid, guildId, auto } = data;
+        const { nombre, distancia, uid, guildId, auto, canal } = data;
 
         // ── MODO AUTOMÁTICO: viene uid y guildId reales desde el link personalizado ──
         if (auto && uid && guildId) {
@@ -106,26 +106,39 @@ http.createServer(async (req, res) => {
           }
           // Registrar presencia AUTOMÁTICAMENTE
           const nombreReal = decodeURIComponent(nombre || uid);
+          const canalNombre = decodeURIComponent(canal || '');
           const hora = horaAR();
           sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia: Math.round(distancia) });
-          // Guardar en Sheets y puntos (async, no bloquea la respuesta)
           (async () => {
             try {
-              const mat = 'iev'; // se detecta mejor con el canal, pero acá usamos genérico
-              await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, '');
+              // Detectar materia REAL según el canal donde se inició la clase
+              const mat = detectarMateria(guildId, canalNombre || sesion.canalNombre || '');
+              const guildObj = client.guilds.cache.get(guildId);
+              const servidorNom = guildObj?.name || '';
+              await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, servidorNom);
               const p = darPuntos(uid, nombreReal, 'asistencia');
-              if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: nombreReal, guildId, registradoEn: ahoraAR() });
+              // Guardar materia en el registro del alumno
+              const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+              if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: nombreReal, materia: MNOM[mat]||mat, guildId, registradoEn: ahoraAR() });
+              else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = MNOM[mat]||mat; r.guildId = guildId; registros.set(uid, r); }
+              // Verificar logros desbloqueados
+              const nuevosLogros = verificarLogros(uid, nombreReal, p, canalNombre);
               guardarDatos();
-              // Avisar al alumno por DM
+              // DM al alumno con logros si los hay
+              let logroMsg = '';
+              if (nuevosLogros.length) logroMsg = '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? '🏅 ' + l.emoji + ' ' + l.nombre : ''; }).join('\n');
               try {
                 const u = await client.users.fetch(uid);
-                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts');
+                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts' + logroMsg);
+                // Actualizar rol Discord del alumno
+                const miembro = await guildObj?.members.fetch(uid).catch(() => null);
+                if (miembro) await actualizarRol(miembro, p.pts);
               } catch {}
-              // Publicar en el canal de la clase
+              // Publicar en el canal de la clase (con fetch para garantizar que lo trae)
               try {
                 if (sesion.canalId) {
-                  const canal = client.channels.cache.get(sesion.canalId);
-                  if (canal) await canal.send('✅ **' + nombreReal + '** marcó presencia — ' + hora + ' (📍 ' + Math.round(distancia) + 'm)');
+                  const canalObj = await client.channels.fetch(sesion.canalId).catch(() => null);
+                  if (canalObj) await canalObj.send('✅ **' + nombreReal + '** marcó presencia — ' + hora + ' (📍 ' + Math.round(distancia) + 'm)' + (nuevosLogros.length ? ' 🏅' : ''));
                 }
               } catch {}
             } catch (e) { LOG.error('Error registro automático GPS', e); }
@@ -215,6 +228,7 @@ function cargarDatos() {
           codigoClase:          s.codigoClase || '',
           tokenTs:              s.tokenTs || 0,
           canalId:              s.canalId || '',
+          canalNombre:          s.canalNombre || '',
           presentesUltimaClase: s.presentesUltimaClase || [],
           fechaUltimaClase:     s.fechaUltimaClase || '',
         });
@@ -856,6 +870,7 @@ async function iniciarClase(channel, titulo, guildId) {
   s.linkParams = linkParams;
   s.tokenTs    = Date.now();
   s.canalId    = channel.id;
+  s.canalNombre = channel.name;
 
   // Mensaje público en el canal — SIN el código
   await channel.send({
@@ -1382,10 +1397,11 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
     if (sesion.asistentes.has(uid)) { await interaction.reply({ content: nombre + ', ya marcaste presente.', ephemeral: true }); return; }
 
-    // Link personalizado con el UID y guildId REALES de Discord
-    const guildName = encodeURIComponent(interaction.guild?.name || '');
-    const nombreEnc = encodeURIComponent(nombre);
-    const link = `https://aulasvirtuales.name/presencia.html?uid=${uid}&guildId=${interaction.guildId}&guild=${guildName}&nombre=${nombreEnc}&clase=${encodeURIComponent(sesion.titulo||'Clase')}&auto=1`;
+    // Link personalizado con el UID, guildId y CANAL reales de Discord
+    const guildName  = encodeURIComponent(interaction.guild?.name || '');
+    const nombreEnc  = encodeURIComponent(nombre);
+    const canalNom   = encodeURIComponent(interaction.channel?.name || '');
+    const link = `https://aulasvirtuales.name/presencia.html?uid=${uid}&guildId=${interaction.guildId}&guild=${guildName}&nombre=${nombreEnc}&canal=${canalNom}&clase=${encodeURIComponent(sesion.titulo||'Clase')}&auto=1`;
 
     await interaction.reply({
       content: '📍 **Registrá tu presencia**\n\nAbrí este link desde tu celular o PC del colegio:\n' + link + '\n\nActivá la ubicación cuando lo pida. Si estás en el instituto, tu presencia se registra sola.',
