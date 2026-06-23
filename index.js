@@ -99,6 +99,13 @@ http.createServer(async (req, res) => {
             res.end(JSON.stringify({ ok: false, error: 'No hay clase activa en este momento.' }));
             return;
           }
+          // Verificar que la ventana de asistencia (20 min) no haya vencido
+          if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > 20 * 60 * 1000) {
+            sesion.activa = false;
+            res.writeHead(400, {'Content-Type': 'application/json'});
+            res.end(JSON.stringify({ ok: false, error: 'La ventana de asistencia (20 min) ya cerró. Avisale al profesor.' }));
+            return;
+          }
           if (sesion.asistentes.has(uid)) {
             res.writeHead(200, {'Content-Type': 'application/json'});
             res.end(JSON.stringify({ ok: true, yaRegistrado: true, mensaje: 'Ya tenías tu presencia registrada.' }));
@@ -127,10 +134,15 @@ http.createServer(async (req, res) => {
               // DM al alumno con logros si los hay
               let logroMsg = '';
               if (nuevosLogros.length) logroMsg = '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? '🏅 ' + l.emoji + ' ' + l.nombre : ''; }).join('\n');
+              // ¿Está registrado con nombre real?
+              const reg = registros.get(uid);
+              const tieneNombreReal = reg && reg.nombreReal && reg.nombreReal.trim().split(/\s+/).length >= 2 && reg.nombreRealConfirmado;
+              const avisoRegistro = !tieneNombreReal
+                ? '\n\n⚠️ **Importante:** Marcaste presencia con tu nombre de Discord. Para que tu asistencia cuente con tu nombre real, usá el comando `/registrarme` en Discord con tu apellido y nombre completos. Si no lo hacés, tu profesor puede no reconocerte en la lista.'
+                : '';
               try {
                 const u = await client.users.fetch(uid);
-                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts' + logroMsg);
-                // Actualizar rol Discord del alumno
+                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts' + logroMsg + avisoRegistro);
                 const miembro = await guildObj?.members.fetch(uid).catch(() => null);
                 if (miembro) await actualizarRol(miembro, p.pts);
               } catch {}
@@ -1068,29 +1080,41 @@ client.once(Events.ClientReady, async (c) => {
       if (ahora > v.expira || v.usado) codigosGPS.delete(k);
   }, 5 * 60 * 1000);
 
-  // Renovar código del pizarrón cada 10 minutos SOLO en clases realmente activas
+  // Cerrar la VENTANA DE ASISTENCIA pasados 20 min — revisa cada minuto
+  // (la clase sigue, pero ya nadie puede marcar presencia)
   setInterval(async () => {
-    let huboRenovacion = false;
+    let cambios = false;
+    const VENTANA_ASISTENCIA = 20 * 60 * 1000; // 20 minutos para marcar presencia
     for (const [gid, s] of sesiones.entries()) {
       if (!s.activa) continue;
-      if (!s.fecha) continue;
-      // Sesión fantasma: lleva más de 4 horas activa sin cerrar — cerrarla
-      if (s.tokenTs && (Date.now() - s.tokenTs) > 4 * 60 * 60 * 1000) {
+      if (!s.fecha || !s.tokenTs) continue;
+
+      const transcurrido = Date.now() - s.tokenTs;
+
+      // Pasados 20 min, cerrar la ventana de asistencia automáticamente
+      if (transcurrido > VENTANA_ASISTENCIA) {
         s.activa = false;
-        continue;
-      }
-      s.codigoClase = Math.floor(1000 + Math.random() * 9000).toString();
-      s.codigoRenovadoEn = Date.now();
-      huboRenovacion = true;
-      if (PROFESOR_ID) {
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps' }));
+        s.fechaUltimaClase = s.fecha;
+        clasesTotales.set(gid, (clasesTotales.get(gid) || 0) + 1);
+        cambios = true;
+        // Avisar al profesor y publicar resumen en el canal
+        if (PROFESOR_ID) {
+          try {
+            const prof = await client.users.fetch(PROFESOR_ID);
+            await prof.send('🔔 La asistencia de **' + (s.titulo||'Clase') + '** se cerró (pasaron los 20 min).\n👥 ' + s.asistentes.size + ' presentes registrados.\nUsá /alumnos para ver la lista.');
+          } catch {}
+        }
         try {
-          const prof = await client.users.fetch(PROFESOR_ID);
-          await prof.send('🔄 **Código renovado** — ' + (s.titulo||'Clase') + '\n\nNuevo código del pizarrón:\n\n> **' + s.codigoClase + '**\n\nActualizá el pizarrón. El código anterior ya no funciona.');
+          if (s.canalId) {
+            const canalObj = await client.channels.fetch(s.canalId).catch(() => null);
+            if (canalObj) await canalObj.send('⏰ **Asistencia cerrada** — ' + (s.titulo||'Clase') + '\n👥 ' + s.asistentes.size + ' presentes. La ventana de 20 minutos finalizó.');
+          }
         } catch {}
       }
     }
-    if (huboRenovacion) guardarDatos();
-  }, 10 * 60 * 1000);
+    if (cambios) guardarDatos();
+  }, 60 * 1000);
 
   // Recordatorio de entregas próximas a vencer (cada hora)
   setInterval(async () => {
@@ -1913,7 +1937,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         await actualizarRol(interaction.member, p.pts);
         const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
         const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} **${l.nombre}**` : ''; }).join('\n') : '';
-        const sinRegistro = !registros.has(uid) ? '\n💡 Con /registrarme podés poner tu nombre real.' : '';
+        const regC = registros.get(uid);
+        const tieneNombreC = regC && regC.nombreRealConfirmado && regC.nombreReal && regC.nombreReal.trim().split(/\s+/).length >= 2;
+        const sinRegistro = !tieneNombreC ? '\n\n⚠️ Marcaste con tu nombre de Discord. Usá `/registrarme` con tu apellido y nombre completos para que tu asistencia cuente correctamente.' : '';
         await interaction.editReply(
           `✅ **${nombre}** — presencia a las **${hora}** (📍 ${datos.distancia}m del instituto)\n` +
           `${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` +
@@ -1925,6 +1951,11 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'codigo': {
         const sesion  = getSesion(interaction.guildId);
         if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
+        if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > 20 * 60 * 1000) {
+          sesion.activa = false;
+          await interaction.editReply('La ventana de asistencia (20 min) ya cerró. Avisale al profesor si llegaste tarde.');
+          break;
+        }
         const uid     = interaction.user.id;
         const nombre  = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
         if (sesion.asistentes.has(uid)) { await interaction.editReply(`${nombre}, ya marcaste presente.`); break; }
@@ -2500,10 +2531,16 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const uid         = interaction.user.id;
         const nombreReal  = interaction.options.getString('nombre').trim();
         const carrera     = interaction.options.getString('carrera') || '';
-        if (nombreReal.length < 3) { await interaction.editReply('❌ El nombre debe tener al menos 3 caracteres.'); break; }
+        // Validar nombre completo: al menos 2 palabras (apellido + nombre)
+        if (nombreReal.length < 5 || nombreReal.split(/\s+/).length < 2) {
+          await interaction.editReply('❌ Necesito tu **nombre completo** (apellido y nombre).\n\nEjemplo: `/registrarme nombre:Dominguez Dante Raul`\n\nEscribilo de nuevo con apellido y nombre.');
+          break;
+        }
         const yaExistia   = registros.has(uid);
         const matReg = detectarMateria(interaction.guildId, interaction.channel?.name);
         const MNOMS  = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
+        // Conservar materia previa si ya tenía una de otro canal
+        const regPrevio = registros.get(uid);
         registros.set(uid, {
           nombreReal,
           carrera,
@@ -2511,6 +2548,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           guildId:     interaction.guildId,
           discordUser: interaction.user.username,
           registradoEn: ahoraAR(),
+          nombreRealConfirmado: true,
         });
         guardarDatos();
         await interaction.editReply(
