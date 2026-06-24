@@ -725,6 +725,29 @@ function getNombreReal(userId, fallback) {
   return reg ? reg.nombreReal : fallback;
 }
 
+async function actualizarNombreSheets(nombreViejo, nombreNuevo, fecha) {
+  // Reemplaza el nombre en las filas de asistencia de HOY (columna C)
+  try {
+    const sheets = await getSheets();
+    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F' });
+    const filas = resp.data.values || [];
+    const updates = [];
+    for (let i = 0; i < filas.length; i++) {
+      // fila: [fecha, hora, nombre, estado, materia, servidor]
+      if (filas[i][0] === fecha && filas[i][2] === nombreViejo) {
+        updates.push({ range: `Asistencia!C${i+1}`, values: [[nombreNuevo]] });
+      }
+    }
+    if (updates.length) {
+      await sheets.spreadsheets.values.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        resource: { valueInputOption: 'USER_ENTERED', data: updates }
+      });
+    }
+    return updates.length;
+  } catch (e) { LOG.error('Error actualizando nombre en Sheets', e); return 0; }
+}
+
 async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
   for (let intento = 1; intento <= 3; intento++) {
     try {
@@ -2539,8 +2562,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const yaExistia   = registros.has(uid);
         const matReg = detectarMateria(interaction.guildId, interaction.channel?.name);
         const MNOMS  = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
-        // Conservar materia previa si ya tenía una de otro canal
+        // Nombre viejo (apodo) con el que pudo haber marcado antes de registrarse
         const regPrevio = registros.get(uid);
+        const nombreViejo = regPrevio?.nombreReal || interaction.member?.displayName || interaction.user.username;
         registros.set(uid, {
           nombreReal,
           carrera,
@@ -2550,6 +2574,29 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           registradoEn: ahoraAR(),
           nombreRealConfirmado: true,
         });
+
+        // Actualizar el nombre en la asistencia de HOY si ya marcó con el apodo
+        let asistenciaActualizada = false;
+        for (const [gid, s] of sesiones.entries()) {
+          if (s.asistentes && s.asistentes.has(uid)) {
+            const datos = s.asistentes.get(uid);
+            if (datos.nombre !== nombreReal) { datos.nombre = nombreReal; s.asistentes.set(uid, datos); asistenciaActualizada = true; }
+          }
+          if (s.presentesUltimaClase) {
+            const idx = s.presentesUltimaClase.findIndex(a => a.uid === uid);
+            if (idx >= 0 && s.presentesUltimaClase[idx].nombre !== nombreReal) {
+              s.presentesUltimaClase[idx].nombre = nombreReal; asistenciaActualizada = true;
+            }
+          }
+        }
+        // Actualizar el nombre guardado en puntos (para rankings y listas)
+        if (puntos.has(uid)) { const pp = puntos.get(uid); pp.nombre = nombreReal; puntos.set(uid, pp); }
+
+        // Corregir el nombre en Google Sheets (asistencias de hoy)
+        if (nombreViejo && nombreViejo !== nombreReal) {
+          actualizarNombreSheets(nombreViejo, nombreReal, fechaAR()).catch(()=>{});
+        }
+
         guardarDatos();
         await interaction.editReply(
           `${yaExistia ? '✏️ **Registro actualizado**' : '✅ **Registro exitoso**'}
@@ -2562,7 +2609,8 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           `💬 **Discord:** @${interaction.user.username}
 
 ` +
-          `A partir de ahora tu nombre real aparecerá en la asistencia y el dashboard.`
+          `A partir de ahora tu nombre real aparecerá en la asistencia y el dashboard.` +
+          (asistenciaActualizada ? `\n\n✅ Tu asistencia de hoy ya fue actualizada con tu nombre real.` : '')
         );
         break;
       }
