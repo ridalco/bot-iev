@@ -485,7 +485,7 @@ function darPuntos(userId, nombre, tipo) {
   if (!p.logros)      p.logros  = [];
   if (!p.streak)      p.streak  = 0;
   if (!p.ultimaClase) p.ultimaClase = '';
-  const delta = { asistencia: 10, entrega: 20, pregunta: 5 }[tipo] || 0;
+  const delta = { asistencia: 10, entrega: 20, pregunta: 5, quiz: 15, desafio: 40 }[tipo] || 0;
   p.pts += delta;
   if (tipo === 'asistencia') {
     p.asistencias++;
@@ -1301,12 +1301,16 @@ client.on(Events.MessageCreate, async (msg) => {
           `${form.comentario ? `💬 **Comentario:** ${form.comentario}\n` : ''}` +
           `━━━━━━━━━━━━━━━━━━━━━━━━`
         );
-        // Guardar en historial
+        // Guardar en historial — verificar si ya entregó ESTA actividad antes
         if (!historial.has(uid)) historial.set(uid, []);
-        historial.get(uid).push({ actividad: form.actividad, fecha: fechaAR(), link: form.link, explicacion: form.explicacion.substring(0,500), comentario: form.comentario });
+        const histAlumno = historial.get(uid);
+        const yaEntrego = histAlumno.some(h => h.actividad.trim().toLowerCase() === form.actividad.trim().toLowerCase());
+        histAlumno.push({ actividad: form.actividad, fecha: fechaAR(), link: form.link, explicacion: form.explicacion.substring(0,500), comentario: form.comentario, reentrega: yaEntrego });
         guardarDatos();
         compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.explicacion} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
-        const p = darPuntos(uid, nombre, 'entrega');
+        // Solo sumar puntos si es la PRIMERA vez que entrega esta actividad — evita farmear puntos reenviando
+        const p = yaEntrego ? (puntos.get(uid) || darPuntos(uid, nombre, 'entrega_sin_puntos')) : darPuntos(uid, nombre, 'entrega');
+        if (yaEntrego) LOG.info(`${nombre} reentregó "${form.actividad}" — no se sumaron puntos de nuevo`);
         await actualizarRol(msg.member, p.pts);
         try {
           await msg.channel.sendTyping();
@@ -1399,7 +1403,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     const nombre = interaction.member?.displayName || interaction.user.username;
     let msg;
     if (resp === quiz.correcta) {
-      const p = darPuntos(uid, nombre, 'pregunta'); darPuntos(uid, nombre, 'pregunta'); const p3 = darPuntos(uid, nombre, 'pregunta');
+      const p3 = darPuntos(uid, nombre, 'quiz');
       await actualizarRol(interaction.member, p3.pts);
       msg = `✅ **¡Correcto ${nombre}!** ${quiz.explicacion}\n\n+15 pts | Total: **${p3.pts} pts**`;
     } else {
@@ -1862,8 +1866,8 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         if (!des.soluciones.size) { desafioActivo = null; await interaction.editReply('Cerrado sin participantes.'); break; }
         const [gid, gd] = [...des.soluciones.entries()][0];
         const gm = await interaction.guild.members.fetch(gid).catch(()=>null);
-        const pG = darPuntos(gid, gd.nombre, 'entrega'); darPuntos(gid, gd.nombre, 'entrega');
-        if (gm) await actualizarRol(gm, pG.pts + 20);
+        const pG = darPuntos(gid, gd.nombre, 'desafio');
+        if (gm) await actualizarRol(gm, pG.pts);
         desafioActivo = null;
         await interaction.editReply('✅ Desafio cerrado.');
         await interaction.channel.send(`🏆 **DESAFIO CERRADO** — ${des.soluciones.size} participantes\n🥇 **${gd.nombre}** — primera solución (${gd.hora})\n\n¡Felicitaciones a todos! Usá /ranking.`);
