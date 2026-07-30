@@ -884,7 +884,7 @@ async function corregirEntrega(texto, gid, ch) {
 // ════════════════════════════════════════════════════════════════
 async function iniciarClase(channel, titulo, guildId) {
   const s = getSesion(guildId);
-  if (s.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return; }
+  if (s.activa) { await channel.send('⚠️ Ya hay una clase activa. Cerrá con `/cerrar-clase`'); return false; }
   s.activa    = true;
   s.asistentes = new Map();
   s.preguntas  = [];
@@ -922,6 +922,7 @@ async function iniciarClase(channel, titulo, guildId) {
       new ButtonBuilder().setCustomId('presente').setLabel('🔑 Tengo código del pizarrón').setStyle(ButtonStyle.Secondary)
     )]
   });
+  return true;
 
   // DM PRIVADO al profesor con el código — nunca se publica en el canal
   if (PROFESOR_ID) {
@@ -1217,7 +1218,7 @@ client.once(Events.ClientReady, async (c) => {
     if (dia === 1 && hora === 8 && min === 30) {
       for (const g of client.guilds.cache.values()) {
         if (!PROFESOR_ID) continue;
-        const riesgo = detectarAlumnosEnRiesgo();
+        const riesgo = detectarAlumnosEnRiesgo(g.id);
         if (!riesgo.length) continue;
         try {
           const prof = await g.client.users.fetch(PROFESOR_ID);
@@ -1513,14 +1514,16 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'reporte': {
         const s        = getSesion(interaction.guildId);
-        const rank     = getRankingCompleto();
+        // Filtrar SOLO alumnos de este servidor (registros guarda el guildId real)
+        const alumnosGuild = [...puntos.entries()].filter(([uid]) => registros.get(uid)?.guildId === interaction.guildId);
+        const rank     = alumnosGuild.sort((a,b) => b[1].pts - a[1].pts);
         const prom     = rank.length ? Math.round(rank.reduce((a,[,p]) => a+p.pts, 0)/rank.length) : 0;
-        const riesgoR  = detectarAlumnosEnRiesgo();
+        const riesgoR  = detectarAlumnosEnRiesgo(interaction.guildId);
         const totalCls = clasesTotales.get(interaction.guildId) || 0;
-        const pAsist   = puntos.size>0&&totalCls>0 ? Math.round([...puntos.values()].reduce((sum,p)=>sum+(p.asistencias||0),0)/puntos.size/totalCls*100) : 0;
+        const pAsist   = alumnosGuild.length>0&&totalCls>0 ? Math.round(alumnosGuild.reduce((sum,[,p])=>sum+(p.asistencias||0),0)/alumnosGuild.length/totalCls*100) : 0;
         await interaction.editReply(safe(
           `📊 **Reporte — ${interaction.guild?.name}**\n📅 ${ahoraAR()}\n\n` +
-          `👥 Alumnos: ${puntos.size} | 📈 Promedio: ${prom} pts | 🏆 Líder: ${rank[0]?.[1]?.nombre||'—'} (${rank[0]?.[1]?.pts||0} pts)\n` +
+          `👥 Alumnos: ${alumnosGuild.length} | 📈 Promedio: ${prom} pts | 🏆 Líder: ${rank[0]?.[1]?.nombre||'—'} (${rank[0]?.[1]?.pts||0} pts)\n` +
           `📊 Asistencia promedio: **${pAsist}%** de ${totalCls} clases dictadas\n` +
           `⚠️ En riesgo: ${riesgoR.length} alumno${riesgoR.length!==1?'s':''}\n\n` +
           `🎓 Clase: ${s.activa ? `🟢 Activa — ${s.asistentes.size} presentes` : '⚪ Inactiva'}\n` +
@@ -1530,10 +1533,12 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         break;
       }
 
-      case 'iniciar-clase':
-        await iniciarClase(interaction.channel, interaction.options.getString('titulo')||'Clase de hoy', interaction.guildId);
-        await interaction.editReply('Clase iniciada. Los alumnos ya pueden marcar presencia.');
+      case 'iniciar-clase': {
+        const iniciada = await iniciarClase(interaction.channel, interaction.options.getString('titulo')||'Clase de hoy', interaction.guildId);
+        if (iniciada) await interaction.editReply('Clase iniciada. Los alumnos ya pueden marcar presencia.');
+        else await interaction.editReply('Ya había una clase activa — no se inició una nueva. Usá /cerrar-clase primero si querés reiniciarla.');
         break;
+      }
 
       case 'cerrar-clase': {
         const s = getSesion(interaction.guildId);
@@ -2513,7 +2518,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       case 'riesgo': {
-        const riesgo = detectarAlumnosEnRiesgo();
+        const riesgo = detectarAlumnosEnRiesgo(interaction.guildId);
         if (!riesgo.length) { await interaction.editReply('Por ahora todos tienen buena actividad, nadie está en riesgo.'); break; }
         const lista = riesgo.map((r,i) =>
           `${i+1}. **${r.nombre}** — ${r.asistencias} asistencia${r.asistencias!==1?'s':''} · ${r.entregas} entrega${r.entregas!==1?'s':''} · ${r.pts} pts`
@@ -2540,6 +2545,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         let qd;
         try { qd = JSON.parse(r.content[0].text.replace(/\`\`\`json|\`\`\`/g,'').trim()); } catch { await interaction.editReply('❌ Error generando pregunta.'); break; }
         torneoActivo = { ...qd, respuestas: new Map(), cierra: Date.now() + 30000, canal: interaction.channelId };
+        setTimeout(() => { if (torneoActivo && Date.now() >= torneoActivo.cierra) cerrarPreguntaTorneo(); }, 30500);
         const botonesT = new ActionRowBuilder().addComponents(
           ...'ABCD'.split('').map(l => new ButtonBuilder().setCustomId(`torneo_${l}`).setLabel(l).setStyle(ButtonStyle.Secondary))
         );
@@ -2709,12 +2715,25 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // FUNCIONES AUXILIARES — NUEVAS MEJORAS
 // ════════════════════════════════════════════════════════════════
 
-function detectarAlumnosEnRiesgo() {
+function detectarAlumnosEnRiesgo(guildId) {
+  const totalCl = guildId ? (clasesTotales.get(guildId) || 0) : 0;
   const riesgo = [];
   for (const [uid, p] of puntos.entries()) {
-    if ((p.asistencias||0) < 3 || (p.entregas||0) === 0) {
-      riesgo.push({ uid, nombre: p.nombre, asistencias: p.asistencias||0, entregas: p.entregas||0, pts: p.pts||0 });
+    // Filtrar solo alumnos de ESTE servidor (si se pasó guildId)
+    if (guildId) {
+      const reg = registros.get(uid);
+      if (!reg || reg.guildId !== guildId) continue;
     }
+    // Con pocas clases dictadas, el umbral fijo "< 3 asistencias" marca a todos como riesgo sin razón.
+    // Se usa porcentaje una vez que hay al menos 3 clases; antes de eso, solo marca por 0 entregas.
+    let enRiesgo = false;
+    if (totalCl >= 3) {
+      const pct = Math.round((p.asistencias||0) / totalCl * 100);
+      enRiesgo = pct < 60 || (p.entregas||0) === 0;
+    } else {
+      enRiesgo = (p.entregas||0) === 0 && totalCl > 0; // solo por entregas si el cuatrimestre recién arranca
+    }
+    if (enRiesgo) riesgo.push({ uid, nombre: p.nombre, asistencias: p.asistencias||0, entregas: p.entregas||0, pts: p.pts||0 });
   }
   return riesgo.sort((a,b) => a.asistencias - b.asistencias);
 }
