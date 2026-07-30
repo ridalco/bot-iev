@@ -569,7 +569,7 @@ function similitudJaccard(t1, t2) {
 async function analizarPlagioIA(actividad, n1, c1, n2, c2, sim) {
   try {
     const r = await llamarIA({
-      model: 'claude-sonnet-4-20250514', max_tokens: 350,
+      model: 'claude-sonnet-4-6', max_tokens: 350,
       messages: [{ role: 'user', content:
         `Analizá si hay copia entre estas entregas de "${actividad}".\n${n1}: ${c1.substring(0,600)}\n${n2}: ${c2.substring(0,600)}\nJSON: {"similitud_real":0-100,"veredicto":"Copia evidente|Muy similar|Colaboración|Coincidencia","detalle":"1 oración"}`
       }]
@@ -845,7 +845,7 @@ async function publicarNoticias(guild) {
   for (let intento = 1; intento <= 2; intento++) {
     try {
       const r = await llamarIA({
-        model: 'claude-sonnet-4-20250514', max_tokens: 1000,
+        model: 'claude-sonnet-4-6', max_tokens: 1000,
         messages: [{ role: 'user', content:
           `Generá 3 noticias tech para estudiantes de Informática en Argentina. Temas: IA, redes, ciberseguridad, educación virtual.\nFormato:\n**🔹 [Título]**\nResumen 2-3 oraciones.\n💡 *Por qué importa para tu carrera: [explicación]*\n\nSeparalas con una línea. Hoy: ${fechaAR()}.`
         }]
@@ -871,7 +871,7 @@ async function corregirEntrega(texto, gid, ch) {
     ? `\n\nEVALUÁ SEGÚN ESTA RÚBRICA (mencioná cada criterio explícitamente):\n${rubrica.criterios.map((c,i)=>`${i+1}. ${c}`).join('\n')}`
     : '';
   const r = await llamarIA({
-    model: 'claude-sonnet-4-20250514', max_tokens: 1200,
+    model: 'claude-sonnet-4-6', max_tokens: 1200,
     messages: [{ role: 'user', content:
       `${getContexto(gid, ch)}${rubricaInstruccion}\n\nCorregí pedagógicamente este trabajo:\n\n✅ **Aspectos positivos:**\n[puntos fuertes]\n\n🔧 **Aspectos a mejorar:**\n[lo incompleto]\n\n📊 **Evaluación orientativa:** [Excelente/Muy bueno/Bueno/Regular/Insuficiente]\n\n💡 **Sugerencia:**\n[consejo personal]\n\nTRABAJO:\n${texto.substring(0, 3000)}`
     }]
@@ -1335,7 +1335,7 @@ client.on(Events.MessageCreate, async (msg) => {
     if (!pregunta) return;
     try {
       await msg.channel.sendTyping();
-      const r = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${getContexto(msg.guildId, msg.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+      const r = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 600, messages: [{ role: 'user', content: `${getContexto(msg.guildId, msg.channel?.name)}\n\nPregunta: ${pregunta}` }] });
       await msg.reply(safe(`🤖 ${r.content[0].text}`));
       const s = getSesion(msg.guildId);
       if (s.activa) s.preguntas.push({ pregunta: pregunta.substring(0,100), autor: msg.member?.displayName||msg.author.username });
@@ -1582,7 +1582,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
           if (pregsTexto) {
             const r = await llamarIA({
-              model: 'claude-sonnet-4-20250514', max_tokens: 800,
+              model: 'claude-sonnet-4-6', max_tokens: 800,
               messages: [{ role: 'user', content:
                 `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nAnalizá las preguntas que hicieron los alumnos durante la clase de hoy y generá un resumen pedagógico para el profesor.\n\nPREGUNTAS DE LOS ALUMNOS:\n${pregsTexto}\n\nGenerá:\n📌 **Temas más consultados:** [lista de temas con mayor interés]\n💡 **Conceptos a reforzar:** [donde hubo más dudas]\n✅ **Lo que quedó claro:** [temas bien comprendidos]\n📚 **Recomendación para próxima clase:** [qué repasar o profundizar]\n\nSé concreto y pedagógico.`
               }]
@@ -1641,7 +1641,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const cacheKey = getContexto(interaction.guildId, interaction.channel?.name).substring(0,30) + pregunta;
         let respText = getCache(cacheKey);
         if (!respText) {
-          const r = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nPregunta: ${pregunta}` }] });
+          const r = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nPregunta: ${pregunta}` }] });
           respText = r.content[0].text;
           setCache(cacheKey, respText);
         }
@@ -1693,7 +1693,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'craap': {
         const url = interaction.options.getString('url');
-        const r   = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá 1-5 cada dimensión y dá conclusión final.` }] });
+        const r   = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 800, messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nEvaluá "${url}" con criterio CRAAP. Puntuá 1-5 cada dimensión y dá conclusión final.` }] });
         await interaction.editReply(safe(`🔍 **CRAAP: \`${url}\`**\n\n${r.content[0].text}`));
         break;
       }
@@ -1799,7 +1799,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const uid  = interaction.user.id;
         await interaction.editReply('🧠 Generando pregunta...');
         const r = await llamarIA({
-          model: 'claude-sonnet-4-20250514', max_tokens: 500,
+          model: 'claude-sonnet-4-6', max_tokens: 500,
           messages: [{ role: 'user', content: `${getContexto(interaction.guildId, interaction.channel?.name)}\n\nGenerá UNA pregunta de opción múltiple sobre la Unidad ${unum}. SOLO JSON sin markdown: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
         });
         let qd;
@@ -1817,7 +1817,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'desafio': {
         const mat = interaction.options.getString('materia').toLowerCase();
         await interaction.editReply('⏳ Generando desafio...');
-        const r  = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
+        const r  = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 600, messages: [{ role: 'user', content: `${CONTEXTOS[mat]||CONTEXTOS.iev}\n\nGenerá un desafio semanal. Formato: DESAFIO: [título] ENUNCIADO: [3-5 líneas] PISTA: [sin solución] DIFICULTAD: [Básico/Intermedio/Avanzado]` }] });
         const id = desafioCounter++;
         desafioActivo = id;
         desafios.set(id, { enunciado: r.content[0].text, materia: mat, soluciones: new Map() });
@@ -1837,7 +1837,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const p  = darPuntos(uid, nombre, 'entrega');
         const p2 = darPuntos(uid, nombre, 'pregunta');
         await actualizarRol(interaction.member, p2.pts);
-        const ev = await llamarIA({ model: 'claude-sonnet-4-20250514', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
+        const ev = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
         await interaction.editReply(safe(`✅ **${nombre}** — solución registrada.\n\n🤖 ${ev.content[0].text}\n\n📤 +25 pts | Total: **${p2.pts} pts**`));
         break;
       }
@@ -2497,7 +2497,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const unids  = getUnidades(interaction.guildId, interaction.channel?.name);
         const temas  = Object.entries(unids).filter(([n])=>+n>=desde&&+n<=hasta).map(([n,v])=>`U${n}: ${v.split('\n')[0]}`).join('\n');
         const r = await llamarIA({
-          model: 'claude-sonnet-4-20250514', max_tokens: 2000,
+          model: 'claude-sonnet-4-6', max_tokens: 2000,
           messages: [{ role: 'user', content:
             `${ctx}\n\nGenerá un examen parcial profesional que cubra estas unidades:\n${temas}\n\n` +
             `Incluí exactamente:\n` +
@@ -2534,7 +2534,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const ctx  = CONTEXTOS[mat] || CONTEXTOS.iev;
         const unum = Math.ceil(Math.random() * Object.keys(UNIDADES[mat]||UNIDADES.iev).length);
         const r = await llamarIA({
-          model: 'claude-sonnet-4-20250514', max_tokens: 400,
+          model: 'claude-sonnet-4-6', max_tokens: 400,
           messages: [{ role: 'user', content: `${ctx}\n\nGenerá UNA pregunta de torneo sobre la Unidad ${unum}. SOLO JSON: {"pregunta":"...","opciones":["A) ...","B) ...","C) ...","D) ..."],"correcta":"A","explicacion":"..."}` }]
         });
         let qd;
