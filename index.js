@@ -135,8 +135,19 @@ function responderJson(res, status, payload) {
 // ESTADO DE ARRANQUE — hasta que sea true, el bot todavía no terminó
 // de conectarse a Discord ni de registrar comandos. El health check
 // /health informa que Node.js está vivo y /ready indica si Discord ya está conectado.
+//
+// TOPE DE ESPERA: si la conexión a Discord se cuelga (pasó varias veces
+// el 03/08/2026), /ready NO debe esperar para siempre — eso deja a
+// Render trabado en "Deploying..." sin límite. Pasados 2 minutos desde
+// que arrancó el proceso, /ready responde 200 igual, aunque Discord
+// todavía no haya conectado, para que el deploy no quede colgado.
 // ════════════════════════════════════════════════════════════════
 let botReady = false;
+const BOOT_TIME = Date.now();
+const READY_GRACE_MS = 2 * 60 * 1000; // 2 minutos de margen
+function estaListoOVencioElMargen() {
+  return botReady || (Date.now() - BOOT_TIME > READY_GRACE_MS);
+}
 
 // ════════════════════════════════════════════════════════════════
 // KEEP-ALIVE HTTP — necesario para Render plan gratuito
@@ -307,10 +318,15 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // Readiness opcional: indica si Discord ya está conectado y operativo.
+  // Readiness: indica si Discord ya está conectado, o si ya pasó el
+  // margen de 2 minutos (para que Render nunca se quede esperando para siempre).
   if (req.method === 'GET' && req.url === '/ready') {
-    res.writeHead(botReady ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ready: botReady, time: ahoraAR() }));
+    const listo = estaListoOVencioElMargen();
+    if (!botReady && listo) {
+      LOG.warn('/ready devolvió 200 por vencimiento del margen — Discord todavía no confirmó conexión.');
+    }
+    res.writeHead(listo ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ready: listo, discordConectado: botReady, time: ahoraAR() }));
     return;
   }
 
