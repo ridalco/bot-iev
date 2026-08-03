@@ -58,7 +58,6 @@ try {
 
 // Constantes de configuración
 const DISCORD_TOKEN      = process.env.DISCORD_TOKEN;
-const CLIENT_ID          = '1497945827874967733';
 const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY;
 const SPREADSHEET_ID     = process.env.SPREADSHEET_ID;
 const PROFESOR_ID        = process.env.PROFESOR_ID   || null;
@@ -194,16 +193,32 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // Keep-alive — 503 hasta que el bot esté realmente conectado a Discord
-  // y con los comandos registrados. Esto retrasa el "live" de Render
-  // hasta que el bot pueda procesar interacciones de verdad.
-  if (!botReady) {
-    res.writeHead(503, { 'Content-Type': 'text/plain' });
-    res.end(`Mentor iniciando, todavía no está listo — ${ahoraAR()}`);
+  // Health check de Render: confirma que el proceso Node está vivo.
+  // Debe responder 200 aunque Discord todavía esté conectando, para evitar
+  // reinicios del servicio durante el arranque.
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      ok: true,
+      processRunning: true,
+      discordReady: botReady,
+      time: ahoraAR()
+    }));
     return;
   }
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end(`Mentor bot activo — ${ahoraAR()}`);
+
+  // Readiness opcional: indica si Discord ya está conectado y operativo.
+  if (req.method === 'GET' && req.url === '/ready') {
+    res.writeHead(botReady ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ready: botReady, time: ahoraAR() }));
+    return;
+  }
+
+  // Página raíz: siempre responde 200 para que Render mantenga el servicio.
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end(botReady
+    ? `Mentor bot activo — ${ahoraAR()}`
+    : `Mentor iniciando conexión con Discord — ${ahoraAR()}`);
 }).listen(PORT, () => LOG.info(`Keep-alive y endpoint GPS en puerto ${PORT}`));
 
 // ════════════════════════════════════════════════════════════════
@@ -1095,12 +1110,13 @@ const commands = [
     .addUserOption(o => o.setName('alumno').setDescription('Alumno a consultar (solo profesor). Dejá vacío para el tuyo.').setRequired(false)),
 ];
 
-async function registrarComandos(guildId) {
-  try {
-    const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
-    await rest.put(Routes.applicationGuildCommands(CLIENT_ID, guildId), { body: commands.map(c => c.toJSON()) });
-    LOG.info(`Comandos registrados en guild ${guildId}`);
-  } catch (e) { LOG.error(`Error registrando comandos en ${guildId}`, e); }
+async function registrarComandos(guildId, applicationId) {
+  const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
+  await rest.put(
+    Routes.applicationGuildCommands(applicationId, guildId),
+    { body: commands.map(command => command.toJSON()) }
+  );
+  LOG.info(`Comandos registrados en guild ${guildId} para aplicación ${applicationId}`);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1110,7 +1126,21 @@ client.once(Events.ClientReady, async (c) => {
   LOG.info(`Mentor conectado como ${c.user.tag}`);
   LOG.info(`Hora Argentina: ${ahoraAR()}`);
   cargarDatos();
-  for (const g of c.guilds.cache.values()) await registrarComandos(g.id);
+
+  // No usar un CLIENT_ID escrito a mano. Se toma el ID de la aplicación
+  // correspondiente al token que realmente inició sesión.
+  const applicationId = c.application?.id || c.user.id;
+  LOG.info(`Application ID conectado: ${applicationId}`);
+
+  try {
+    for (const guild of c.guilds.cache.values()) {
+      await registrarComandos(guild.id, applicationId);
+    }
+  } catch (e) {
+    LOG.error('No se pudieron registrar los comandos slash', e);
+    botReady = false;
+    return;
+  }
 
   // Recién ACÁ el bot está genuinamente listo: datos cargados, comandos
   // registrados en Discord, conexión al Gateway activa.
@@ -1277,6 +1307,17 @@ client.once(Events.ClientReady, async (c) => {
   }, 60000);
 });
 
+// Registrar comandos automáticamente cuando el bot entra a un servidor nuevo.
+client.on(Events.GuildCreate, async (guild) => {
+  try {
+    const applicationId = client.application?.id || client.user?.id;
+    if (!applicationId) throw new Error('Application ID no disponible');
+    await registrarComandos(guild.id, applicationId);
+  } catch (e) {
+    LOG.error(`Error registrando comandos en servidor nuevo ${guild.id}`, e);
+  }
+});
+
 // ════════════════════════════════════════════════════════════════
 // EVENTO: MENSAJES — formulario de entregas y menciones
 // ════════════════════════════════════════════════════════════════
@@ -1382,6 +1423,10 @@ client.on(Events.MessageCreate, async (msg) => {
 // EVENTO: INTERACCIONES (botones y comandos slash)
 // ════════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction) => {
+  const identificador = interaction.isChatInputCommand()
+    ? `/${interaction.commandName}`
+    : (interaction.customId || `tipo=${interaction.type}`);
+  LOG.info(`Interacción recibida: ${identificador} | usuario=${interaction.user?.tag || interaction.user?.id || 'desconocido'}`);
 
   // ── BOTÓN: Encuesta ──
   if (interaction.isButton() && interaction.customId.startsWith('enc_')) {
@@ -1509,9 +1554,15 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
   // ── COMANDOS SLASH ──
   if (!interaction.isChatInputCommand()) return;
 
-  // deferReply SIEMPRE — evita "Unknown Interaction" por timeout
-  try { await interaction.deferReply(); }
-  catch (e) { LOG.error(`Error en deferReply para /${interaction.commandName}`, e); return; }
+  // Confirmar la interacción inmediatamente. Discord exige una respuesta
+  // inicial en pocos segundos; luego el comando puede continuar trabajando.
+  try {
+    await interaction.deferReply();
+    LOG.info(`Interacción confirmada: /${interaction.commandName}`);
+  } catch (e) {
+    LOG.error(`No se pudo confirmar /${interaction.commandName}; la interacción venció o la conexión está duplicada`, e);
+    return;
+  }
 
   // Verificar permisos de profesor
   if (SOLO_PROFESOR.has(interaction.commandName) && !esProfesor(interaction.user.id)) {
