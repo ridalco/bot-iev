@@ -72,6 +72,15 @@ const COOLDOWN_SEG       = 30;
 const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
 
 // ════════════════════════════════════════════════════════════════
+// ESTADO DE ARRANQUE — hasta que sea true, el bot todavía no terminó
+// de conectarse a Discord ni de registrar comandos. El health check
+// HTTP devuelve 503 mientras tanto para que Render NO marque "live"
+// antes de tiempo (evita el error "La aplicación no ha respondido"
+// al probar comandos justo después de un deploy).
+// ════════════════════════════════════════════════════════════════
+let botReady = false;
+
+// ════════════════════════════════════════════════════════════════
 // KEEP-ALIVE HTTP — necesario para Render plan gratuito
 // ════════════════════════════════════════════════════════════════
 http.createServer(async (req, res) => {
@@ -185,7 +194,14 @@ http.createServer(async (req, res) => {
     return;
   }
 
-  // Keep-alive
+  // Keep-alive — 503 hasta que el bot esté realmente conectado a Discord
+  // y con los comandos registrados. Esto retrasa el "live" de Render
+  // hasta que el bot pueda procesar interacciones de verdad.
+  if (!botReady) {
+    res.writeHead(503, { 'Content-Type': 'text/plain' });
+    res.end(`Mentor iniciando, todavía no está listo — ${ahoraAR()}`);
+    return;
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end(`Mentor bot activo — ${ahoraAR()}`);
 }).listen(PORT, () => LOG.info(`Keep-alive y endpoint GPS en puerto ${PORT}`));
@@ -1095,6 +1111,17 @@ client.once(Events.ClientReady, async (c) => {
   LOG.info(`Hora Argentina: ${ahoraAR()}`);
   cargarDatos();
   for (const g of c.guilds.cache.values()) await registrarComandos(g.id);
+
+  // Recién ACÁ el bot está genuinamente listo: datos cargados, comandos
+  // registrados en Discord, conexión al Gateway activa.
+  botReady = true;
+  LOG.info('Bot listo — comandos ya se pueden usar.');
+  if (PROFESOR_ID) {
+    try {
+      const prof = await c.users.fetch(PROFESOR_ID);
+      await prof.send(`✅ **Mentor está en línea y listo.** Ya podés usar los comandos.\n🕐 ${ahoraAR()}`);
+    } catch (e) { LOG.warn('No se pudo enviar DM de arranque: ' + e.message); }
+  }
 
   // Guardar datos forzado cada 5 minutos
   setInterval(guardarDatos, 5 * 60 * 1000);
