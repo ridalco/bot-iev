@@ -1212,6 +1212,17 @@ async function registrarComandos(guildId, applicationId) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// DIAGNÓSTICO DE CONEXIÓN — sin esto, un problema de Gateway (rate
+// limit de IDENTIFY, intents rechazados, red) queda en silencio total
+// y parece que el proceso "no hace nada".
+// ════════════════════════════════════════════════════════════════
+client.on(Events.Error, (e) => LOG.error('Error del cliente Discord', e));
+client.on(Events.Warn, (msg) => LOG.warn(`Aviso de discord.js: ${msg}`));
+client.on(Events.ShardReconnecting, (id) => LOG.warn(`Shard ${id} reconectando al Gateway...`));
+client.on(Events.ShardResume, (id) => LOG.info(`Shard ${id} resumió la sesión con Discord.`));
+client.on(Events.ShardDisconnect, (event, id) => LOG.warn(`Shard ${id} se desconectó (código ${event?.code})`));
+
+// ════════════════════════════════════════════════════════════════
 // EVENTO: BOT LISTO
 // ════════════════════════════════════════════════════════════════
 client.once(Events.ClientReady, async (c) => {
