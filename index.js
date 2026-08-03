@@ -775,9 +775,27 @@ async function guardarNotaSheets(nombreAlumno, materia, actividad, nota, observa
   } catch (e) { LOG.error('Error guardando nota en Sheets', e); }
 }
 
+async function asegurarHojaExiste(sheets, nombreHoja) {
+  try {
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+    const existe = meta.data.sheets.some(s => s.properties.title === nombreHoja);
+    if (!existe) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SPREADSHEET_ID,
+        resource: { requests: [{ addSheet: { properties: { title: nombreHoja } } }] }
+      });
+      LOG.info(`Hoja "${nombreHoja}" creada automáticamente en Sheets.`);
+    }
+    return true;
+  } catch (e) { LOG.error(`Error verificando/creando hoja "${nombreHoja}"`, e); return false; }
+}
+
 async function backupPuntos() {
   try {
     const sheets = await getSheets();
+    // Crear la hoja "Puntos" automáticamente si todavía no existe — evita el error recurrente
+    const ok = await asegurarHojaExiste(sheets, 'Puntos');
+    if (!ok) return;
     const filas  = [...puntos.entries()].map(([id, p]) => [id, p.nombre, p.pts, p.asistencias, p.entregas, p.preguntas, fechaAR()]);
     await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A:G' });
     if (filas.length)
@@ -1262,14 +1280,14 @@ client.on(Events.MessageCreate, async (msg) => {
       const form = formularioActivo.get(uid);
       if (Date.now() > form.expira) {
         formularioActivo.delete(uid);
-        await msg.reply('Se venció el tiempo del formulario. Escribí de nuevo para arrancar.');
+        await msg.channel.send('Se venció el tiempo del formulario. Escribí de nuevo para arrancar.');
         return;
       }
       form.expira = Date.now() + FORMULARIO_MS;
 
       if (form.paso === 1) {
         form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form);
-        await msg.reply('📎 **Paso 2 de 4** — ¿Dónde está el trabajo?\n\nPegá el link (GitHub, Drive...) o adjuntá el archivo acá.\nSi no tenés link, escribí `sin link`.');
+        await msg.channel.send('📎 **Paso 2 de 4** — ¿Dónde está el trabajo?\n\nPegá el link (GitHub, Drive...) o adjuntá el archivo acá.\nSi no tenés link, escribí `sin link`.');
         return;
       }
 
@@ -1278,13 +1296,13 @@ client.on(Events.MessageCreate, async (msg) => {
         if (adj) { form.link = adj.url; form.archivo = adj.name; form.fileSize = Math.round(adj.size/1024) + ' KB'; }
         else { form.link = msg.content.toLowerCase() === 'sin link' ? 'Sin link' : msg.content; form.archivo = null; }
         form.paso = 3; formularioActivo.set(uid, form);
-        await msg.reply('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
+        await msg.channel.send('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
         return;
       }
 
       if (form.paso === 3) {
         form.explicacion = msg.content; form.paso = 4; formularioActivo.set(uid, form);
-        await msg.reply('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
+        await msg.channel.send('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
         return;
       }
 
@@ -1327,7 +1345,7 @@ client.on(Events.MessageCreate, async (msg) => {
     }
     if (!formularioActivo.has(uid) && msg.content.length > 2) {
       formularioActivo.set(uid, { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS });
-      await msg.reply(
+      await msg.channel.send(
         `📝 Hola **${nombre}**\n\n**Paso 1 de 4** — ¿Cómo se llama la actividad o trabajo?` +
         `${!registros.has(uid) ? '\n\n💡 Con /registrarme podés poner tu nombre real en el registro.' : ''}`
       );
