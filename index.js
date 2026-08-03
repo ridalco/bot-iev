@@ -6,8 +6,9 @@
 'use strict';
 require('dotenv').config();
 
-const fs   = require('fs');
-const http = require('http');
+const fs     = require('fs');
+const http   = require('http');
+const crypto = require('crypto');
 const {
   Client, GatewayIntentBits, Events,
   SlashCommandBuilder, REST, Routes,
@@ -70,12 +71,70 @@ const CANAL_NOTICIAS     = 'noticias-tech';
 const COOLDOWN_SEG       = 30;
 const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
 
+// Seguridad y geocercas de asistencia. En Render conviene definir
+// PRESENCIA_SECRET con una cadena larga y aleatoria. Si falta, se usa
+// DISCORD_TOKEN como respaldo para no dejar enlaces sin firma.
+const PRESENCIA_SECRET = process.env.PRESENCIA_SECRET || DISCORD_TOKEN;
+const PRESENCIA_URL    = process.env.PRESENCIA_URL || 'https://aulasvirtuales.name/presencia.html';
+const VENTANA_ASISTENCIA_MS = 20 * 60 * 1000;
+const MAX_BODY_BYTES = 16 * 1024;
+
+const INSTITUTOS_GPS = {
+  ies6: {
+    nombre: 'IES N°6 — Sede Perico',
+    lat: Number(process.env.IES6_LAT || -24.3794182),
+    lng: Number(process.env.IES6_LNG || -65.1246575),
+    radio: Number(process.env.IES6_RADIO || 150)
+  },
+  ies11: {
+    nombre: 'IES N°11 — San Salvador de Jujuy',
+    lat: Number(process.env.IES11_LAT || -24.1892),
+    lng: Number(process.env.IES11_LNG || -65.2987),
+    radio: Number(process.env.IES11_RADIO || 150)
+  }
+};
+
+function calcularDistanciaMetros(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function institutoParaGuild(guildId) {
+  const nombre = (client?.guilds?.cache?.get(guildId)?.name || '').toLowerCase();
+  return (nombre.includes('11') || nombre.includes('alvear')) ? INSTITUTOS_GPS.ies11 : INSTITUTOS_GPS.ies6;
+}
+
+function firmarPresencia({ uid, guildId, exp, nonce }) {
+  return crypto.createHmac('sha256', PRESENCIA_SECRET)
+    .update(`${uid}.${guildId}.${exp}.${nonce}`)
+    .digest('hex');
+}
+
+function firmaValida({ uid, guildId, exp, nonce, sig }) {
+  if (!uid || !guildId || !exp || !nonce || !sig) return false;
+  const esperada = firmarPresencia({ uid, guildId, exp, nonce });
+  const a = Buffer.from(esperada, 'hex');
+  const b = Buffer.from(String(sig), 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function responderJson(res, status, payload) {
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
+  });
+  res.end(JSON.stringify(payload));
+}
+
 // ════════════════════════════════════════════════════════════════
 // ESTADO DE ARRANQUE — hasta que sea true, el bot todavía no terminó
 // de conectarse a Discord ni de registrar comandos. El health check
-// HTTP devuelve 503 mientras tanto para que Render NO marque "live"
-// antes de tiempo (evita el error "La aplicación no ha respondido"
-// al probar comandos justo después de un deploy).
+// /health informa que Node.js está vivo y /ready indica si Discord ya está conectado.
 // ════════════════════════════════════════════════════════════════
 let botReady = false;
 
@@ -90,112 +149,153 @@ http.createServer(async (req, res) => {
 
   if (req.method === 'OPTIONS') { res.writeHead(200); res.end(); return; }
 
-  // Endpoint GPS: recibe verificación y devuelve código de confirmación
+  // Endpoint GPS seguro: valida enlace firmado y recalcula la distancia en servidor.
   if (req.method === 'POST' && req.url === '/presencia/verificar') {
     let body = '';
-    req.on('data', chunk => body += chunk);
-    req.on('end', () => {
+    let excedido = false;
+
+    req.on('data', chunk => {
+      if (excedido) return;
+      body += chunk;
+      if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
+        excedido = true;
+        responderJson(res, 413, { ok: false, error: 'Solicitud demasiado grande.' });
+        req.destroy();
+      }
+    });
+
+    req.on('end', async () => {
+      if (excedido) return;
       try {
-        const data     = JSON.parse(body);
-        const { nombre, distancia, uid, guildId, auto, canal } = data;
+        const data = JSON.parse(body || '{}');
+        const uid = String(data.uid || '').trim();
+        const guildId = String(data.guildId || '').trim();
+        const exp = Number(data.exp || 0);
+        const nonce = String(data.nonce || '');
+        const sig = String(data.sig || '');
+        const lat = Number(data.lat);
+        const lng = Number(data.lng);
+        const precision = Number(data.precision);
 
-        // ── MODO AUTOMÁTICO: viene uid y guildId reales desde el link personalizado ──
-        if (auto && uid && guildId) {
-          const sesion = sesiones.get(guildId);
-          if (!sesion || !sesion.activa) {
-            res.writeHead(400, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({ ok: false, error: 'No hay clase activa en este momento.' }));
-            return;
-          }
-          // Verificar que la ventana de asistencia (20 min) no haya vencido
-          if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > 20 * 60 * 1000) {
-            sesion.activa = false;
-            res.writeHead(400, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({ ok: false, error: 'La ventana de asistencia (20 min) ya cerró. Avisale al profesor.' }));
-            return;
-          }
-          if (sesion.asistentes.has(uid)) {
-            res.writeHead(200, {'Content-Type': 'application/json'});
-            res.end(JSON.stringify({ ok: true, yaRegistrado: true, mensaje: 'Ya tenías tu presencia registrada.' }));
-            return;
-          }
-          // Registrar presencia AUTOMÁTICAMENTE
-          const nombreReal = decodeURIComponent(nombre || uid);
-          const canalNombre = decodeURIComponent(canal || '');
-          const hora = horaAR();
-          sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia: Math.round(distancia) });
-          (async () => {
-            try {
-              // Detectar materia REAL según el canal donde se inició la clase
-              const mat = detectarMateria(guildId, canalNombre || sesion.canalNombre || '');
-              const guildObj = client.guilds.cache.get(guildId);
-              const servidorNom = guildObj?.name || '';
-              await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, servidorNom);
-              const p = darPuntos(uid, nombreReal, 'asistencia');
-              // Guardar materia en el registro del alumno
-              const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
-              if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: nombreReal, materia: MNOM[mat]||mat, guildId, registradoEn: ahoraAR() });
-              else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = MNOM[mat]||mat; r.guildId = guildId; registros.set(uid, r); }
-              // Verificar logros desbloqueados
-              const nuevosLogros = verificarLogros(uid, nombreReal, p, canalNombre);
-              guardarDatos();
-              // DM al alumno con logros si los hay
-              let logroMsg = '';
-              if (nuevosLogros.length) logroMsg = '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? '🏅 ' + l.emoji + ' ' + l.nombre : ''; }).join('\n');
-              // ¿Está registrado con nombre real?
-              const reg = registros.get(uid);
-              const tieneNombreReal = reg && reg.nombreReal && reg.nombreReal.trim().split(/\s+/).length >= 2 && reg.nombreRealConfirmado;
-              const avisoRegistro = !tieneNombreReal
-                ? '\n\n⚠️ **Importante:** Marcaste presencia con tu nombre de Discord. Para que tu asistencia cuente con tu nombre real, usá el comando `/registrarme` en Discord con tu apellido y nombre completos. Si no lo hacés, tu profesor puede no reconocerte en la lista.'
-                : '';
-              try {
-                const u = await client.users.fetch(uid);
-                await u.send('✅ **Presencia registrada** — ' + sesion.titulo + '\n📍 ' + Math.round(distancia) + 'm del instituto · ' + hora + '\n+10 pts · Total: ' + p.pts + ' pts' + logroMsg + avisoRegistro);
-                const miembro = await guildObj?.members.fetch(uid).catch(() => null);
-                if (miembro) await actualizarRol(miembro, p.pts);
-              } catch {}
-              // Publicar en el canal de la clase (con fetch para garantizar que lo trae)
-              try {
-                if (sesion.canalId) {
-                  const canalObj = await client.channels.fetch(sesion.canalId).catch(() => null);
-                  if (canalObj) await canalObj.send('✅ **' + nombreReal + '** marcó presencia — ' + hora + ' (📍 ' + Math.round(distancia) + 'm)' + (nuevosLogros.length ? ' 🏅' : ''));
-                }
-              } catch {}
-            } catch (e) { LOG.error('Error registro automático GPS', e); }
-          })();
-          res.writeHead(200, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ ok: true, registrado: true, nombre: nombreReal, distancia: Math.round(distancia), mensaje: 'Presencia registrada automáticamente.' }));
+        if (!firmaValida({ uid, guildId, exp, nonce, sig })) {
+          responderJson(res, 401, { ok: false, error: 'El enlace no es válido o fue modificado. Volvé a Discord.' });
+          return;
+        }
+        if (!Number.isFinite(exp) || Date.now() > exp) {
+          responderJson(res, 410, { ok: false, error: 'El enlace de asistencia expiró. Volvé a solicitarlo en Discord.' });
+          return;
+        }
+        if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          responderJson(res, 400, { ok: false, error: 'La ubicación recibida no es válida.' });
+          return;
+        }
+        if (!Number.isFinite(precision) || precision <= 0 || precision > 100) {
+          responderJson(res, 422, { ok: false, error: 'La precisión GPS es insuficiente. Acercate a una ventana y reintentá.' });
           return;
         }
 
-        // ── MODO CÓDIGO (fallback): genera código de 6 letras ──
-        const hayClaseActiva = [...sesiones.values()].some(s => s.activa);
-        if (!hayClaseActiva) {
-          res.writeHead(400, {'Content-Type': 'application/json'});
-          res.end(JSON.stringify({ ok: false, error: 'No hay ninguna clase activa en este momento.' }));
+        const sesion = sesiones.get(guildId);
+        if (!sesion || !sesion.activa) {
+          responderJson(res, 400, { ok: false, error: 'No hay una clase activa en este momento.' });
           return;
         }
-        const codigo = Math.random().toString(36).substring(2, 8).toUpperCase();
-        codigosGPS.set(codigo, {
-          nombre: decodeURIComponent(nombre || ''),
-          distancia: Math.round(distancia),
-          expira: Date.now() + 10 * 60 * 1000, // 10 minutos para confirmar
-          usado: false
+        if (!sesion.tokenTs || Date.now() - sesion.tokenTs > VENTANA_ASISTENCIA_MS) {
+          responderJson(res, 410, { ok: false, error: 'La ventana de asistencia de 20 minutos ya cerró.' });
+          return;
+        }
+
+        const guildObj = client.guilds.cache.get(guildId);
+        if (!guildObj) {
+          responderJson(res, 404, { ok: false, error: 'No se encontró el servidor de la clase.' });
+          return;
+        }
+        const miembro = await guildObj.members.fetch(uid).catch(() => null);
+        if (!miembro) {
+          responderJson(res, 403, { ok: false, error: 'El usuario no pertenece al servidor de esta clase.' });
+          return;
+        }
+
+        if (sesion.asistentes.has(uid)) {
+          responderJson(res, 200, { ok: true, yaRegistrado: true, mensaje: 'Tu presencia ya estaba registrada.' });
+          return;
+        }
+
+        const instituto = institutoParaGuild(guildId);
+        const distanciaReal = calcularDistanciaMetros(lat, lng, instituto.lat, instituto.lng);
+        const margenPrecision = Math.min(precision, 20);
+        const radioEfectivo = instituto.radio + margenPrecision;
+
+        if (distanciaReal > radioEfectivo) {
+          LOG.warn(`GPS rechazado: uid=${uid}, guild=${guildId}, distancia=${Math.round(distanciaReal)}m, precisión=±${Math.round(precision)}m`);
+          responderJson(res, 403, {
+            ok: false,
+            fueraDeRadio: true,
+            error: `Estás a ${Math.round(distanciaReal)} m del instituto. El límite permitido es ${instituto.radio} m.`,
+            distancia: Math.round(distanciaReal),
+            radio: instituto.radio,
+            precision: Math.round(precision)
+          });
+          return;
+        }
+
+        const nombreReal = getNombreReal(uid, miembro.displayName || miembro.user.username);
+        const hora = horaAR();
+        const distancia = Math.round(distanciaReal);
+        sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia, precision: Math.round(precision) });
+
+        // Se responde primero para que la página no quede esperando.
+        responderJson(res, 200, {
+          ok: true,
+          registrado: true,
+          nombre: nombreReal,
+          distancia,
+          precision: Math.round(precision),
+          instituto: instituto.nombre,
+          mensaje: 'Presencia registrada automáticamente.'
         });
 
-        res.writeHead(200, {'Content-Type': 'application/json'});
-        res.end(JSON.stringify({ ok: true, codigo, mensaje: 'Ubicación verificada. Ingresá el código en Discord.' }));
+        try {
+          const mat = detectarMateria(guildId, sesion.canalNombre || '');
+          await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '');
+          const p = darPuntos(uid, nombreReal, 'asistencia');
+          const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+          if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: miembro.user.username, materia: MNOM[mat] || mat, guildId, registradoEn: ahoraAR() });
+          else if (!registros.get(uid).materia) {
+            const r = registros.get(uid); r.materia = MNOM[mat] || mat; r.guildId = guildId; registros.set(uid, r);
+          }
+          const nuevosLogros = verificarLogros(uid, nombreReal, p, sesion.canalNombre || '');
+          guardarDatos();
+          await actualizarRol(miembro, p.pts).catch(() => {});
+
+          const logroMsg = nuevosLogros.length ? '\n' + nuevosLogros.map(id => {
+            const l = LOGROS.find(x => x.id === id);
+            return l ? `🏅 ${l.emoji} ${l.nombre}` : '';
+          }).filter(Boolean).join('\n') : '';
+
+          await miembro.send(
+            `✅ **Presencia registrada — ${sesion.titulo}**
+` +
+            `📍 ${distancia} m del instituto · precisión ±${Math.round(precision)} m
+` +
+            `🕐 ${hora} · +10 pts · Total: ${p.pts} pts${logroMsg}`
+          ).catch(() => {});
+
+          if (sesion.canalId) {
+            const canalObj = await client.channels.fetch(sesion.canalId).catch(() => null);
+            if (canalObj) await canalObj.send(`✅ **${nombreReal}** registró su presencia · 🕐 ${hora} · 📍 ${distancia} m`).catch(() => {});
+          }
+          LOG.info(`Presencia GPS segura: ${nombreReal}, ${distancia}m, precisión ±${Math.round(precision)}m`);
+        } catch (e) {
+          LOG.error('La presencia se registró, pero falló una tarea posterior', e);
+        }
       } catch (e) {
-        res.writeHead(500, {'Content-Type': 'application/json'});
-        res.end(JSON.stringify({ ok: false, error: 'Error interno.' }));
+        LOG.error('Error procesando /presencia/verificar', e);
+        if (!res.headersSent) responderJson(res, 400, { ok: false, error: 'Solicitud inválida.' });
       }
     });
     return;
   }
 
-  // Health check de Render: confirma que el proceso Node está vivo.
-  // Debe responder 200 aunque Discord todavía esté conectando, para evitar
-  // reinicios del servicio durante el arranque.
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({
@@ -218,7 +318,7 @@ http.createServer(async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
   res.end(botReady
     ? `Mentor bot activo — ${ahoraAR()}`
-    : `Mentor iniciando conexión con Discord — ${ahoraAR()}`);
+    : `Mentor iniciando, todavía no está listo — ${ahoraAR()}`);
 }).listen(PORT, () => LOG.info(`Keep-alive y endpoint GPS en puerto ${PORT}`));
 
 // ════════════════════════════════════════════════════════════════
@@ -239,7 +339,6 @@ let tareaCounter  = 1;
 let eventoCounter = 1;
 let torneoActivo  = null; // { pregunta, opciones, correcta, respuestas: Map, cierra: timestamp }
 const encuestas   = new Map(); // guildId → { pregunta, opciones, votos: Map, cierra, msgId, canal }
-const codigosGPS  = new Map(); // codigo → { uid, guildId, nombre, distancia, expira, usado }
 
 function cargarDatos() {
   try {
@@ -927,32 +1026,40 @@ async function iniciarClase(channel, titulo, guildId) {
   const guild = client.guilds.cache.get(guildId);
   const guildName = guild?.name || guildId;
 
-  // Generar link GPS único para esta clase (expira en 20 minutos)
-  const linkGPS = generarLinkPresencia(guildId, guildName, s.titulo, 'ALUMNO', '');
-  const linkBase = linkGPS.split('?')[0];
-  const linkParams = linkGPS.split('?')[1].replace(/uid=ALUMNO/, 'uid=');
-
-  s.linkBase   = linkBase;
-  s.linkParams = linkParams;
   s.tokenTs    = Date.now();
   s.canalId    = channel.id;
   s.canalNombre = channel.name;
 
-  // Mensaje público en el canal — SIN el código
-  await channel.send({
-    content:
-      `📋 **ASISTENCIA — ${s.titulo}**\n` +
-      `📅 **${s.fecha}** | 🕐 **${horaAR()}** | ⏰ Expira en **20 minutos**\n\n` +
-      `Para registrar tu presencia:\n` +
-      `1️⃣ Hacé clic en **📍 Registrar presencia** acá abajo\n` +
-      `2️⃣ Se abre una página — activá la ubicación cuando lo pida\n` +
-      `3️⃣ Si estás en el instituto, tu presencia se registra sola ✅\n\n` +
-      `Si no podés usar el GPS, pedile el código del pizarrón al profesor y usá \`/codigo\`.`,
+  // Mensaje visual de asistencia en el canal.
+  const mensajeAsistencia = await channel.send({
+    embeds: [{
+      title: `Asistencia habilitada · ${s.titulo}`,
+      description:
+        `La ventana de registro está abierta durante **20 minutos**.
+
+` +
+        `**Registro por ubicación**
+` +
+        `Pulsá **Registrar asistencia**, permití la ubicación precisa y esperá la confirmación.
+
+` +
+        `**Registro mediante código**
+` +
+        `Solicitá al profesor el código del pizarrón y usá \`/codigo valor:XXXX\`.`,
+      color: 0x2563eb,
+      fields: [
+        { name: '📅 Fecha', value: s.fecha, inline: true },
+        { name: '🕐 Inicio', value: horaAR(), inline: true },
+        { name: '⏳ Cierre', value: '20 minutos', inline: true }
+      ],
+      footer: { text: 'Mentor 🎓 · Validación institucional' }
+    }],
     components: [new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('gps_link').setLabel('📍 Registrar presencia').setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId('presente').setLabel('🔑 Tengo código del pizarrón').setStyle(ButtonStyle.Secondary)
+      new ButtonBuilder().setCustomId('gps_link').setLabel('Registrar asistencia').setEmoji('📍').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId('presente').setLabel('Ingresar código').setEmoji('🔑').setStyle(ButtonStyle.Secondary)
     )]
   });
+  s.mensajeAsistenciaUrl = mensajeAsistencia.url;
 
   // DM PRIVADO al profesor con el código — nunca se publica en el canal
   // ⚠️ FIX (03/08/2026): este bloque y el setTimeout de abajo estaban después de un
@@ -979,18 +1086,6 @@ async function iniciarClase(channel, titulo, guildId) {
   }, 20 * 60 * 1000);
 
   return true;
-}
-
-// ════════════════════════════════════════════════════════════════
-// LINK DE PRESENCIA GPS
-// ════════════════════════════════════════════════════════════════
-function generarLinkPresencia(guildId, guildName, titulo, userId, nombreReal) {
-  const token   = `${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-  const base    = 'https://aulasvirtuales.name/presencia.html';
-  const guild   = encodeURIComponent(guildName || guildId);
-  const clase   = encodeURIComponent(titulo || 'Clase');
-  const nombre  = encodeURIComponent(nombreReal || '');
-  return `${base}?token=${token}&uid=${userId}&guild=${guild}&clase=${clase}&nombre=${nombre}`;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1073,9 +1168,6 @@ const commands = [
   new SlashCommandBuilder().setName('asignar-materia').setDescription('👨‍🏫 Asignar la materia de este servidor a los alumnos presentes/registrados'),
   new SlashCommandBuilder().setName('exportar').setDescription('👨‍🏫 Exportar planilla de asistencia y notas para copiar'),
   new SlashCommandBuilder().setName('cierre').setDescription('👨‍🏫 Informe final de cuatrimestre por alumno (asistencia, notas, condición)'),
-  new SlashCommandBuilder().setName('confirmar')
-    .setDescription('Confirmar presencia con el código GPS de la página web')
-    .addStringOption(o => o.setName('codigo').setDescription('Código de 6 caracteres que te dio la página').setRequired(true).setMinLength(6).setMaxLength(6)),
   new SlashCommandBuilder().setName('registrarme')
     .setDescription('Registrá tu nombre real para que aparezca en la asistencia')
     .addStringOption(o => o.setName('nombre').setDescription('Tu nombre y apellido completo').setRequired(true))
@@ -1157,13 +1249,6 @@ client.once(Events.ClientReady, async (c) => {
   setInterval(guardarDatos, 5 * 60 * 1000);
   // Limpiar formularios expirados cada 5 minutos
   setInterval(limpiarFormularios, 5 * 60 * 1000);
-  // Limpiar códigos GPS expirados cada 5 minutos
-  setInterval(() => {
-    const ahora = Date.now();
-    for (const [k, v] of codigosGPS.entries())
-      if (ahora > v.expira || v.usado) codigosGPS.delete(k);
-  }, 5 * 60 * 1000);
-
   // Cerrar la VENTANA DE ASISTENCIA pasados 20 min — revisa cada minuto
   // (la clase sigue, pero ya nadie puede marcar presencia)
   setInterval(async () => {
@@ -1524,14 +1609,35 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
     if (sesion.asistentes.has(uid)) { await interaction.reply({ content: nombre + ', ya marcaste presente.', ephemeral: true }); return; }
 
-    // Link personalizado con el UID, guildId y CANAL reales de Discord
-    const guildName  = encodeURIComponent(interaction.guild?.name || '');
-    const nombreEnc  = encodeURIComponent(nombre);
-    const canalNom   = encodeURIComponent(interaction.channel?.name || '');
-    const link = `https://aulasvirtuales.name/presencia.html?uid=${uid}&guildId=${interaction.guildId}&guild=${guildName}&nombre=${nombreEnc}&canal=${canalNom}&clase=${encodeURIComponent(sesion.titulo||'Clase')}&auto=1`;
+    // Link individual, firmado y con vencimiento. El servidor ignora nombre y distancia enviados por el navegador.
+    const exp = Math.min(Date.now() + VENTANA_ASISTENCIA_MS, (sesion.tokenTs || Date.now()) + VENTANA_ASISTENCIA_MS);
+    const nonce = crypto.randomBytes(12).toString('hex');
+    const sig = firmarPresencia({ uid, guildId: interaction.guildId, exp, nonce });
+    const qp = new URLSearchParams({
+      uid,
+      guildId: interaction.guildId,
+      guild: interaction.guild?.name || '',
+      clase: sesion.titulo || 'Clase',
+      exp: String(exp),
+      nonce,
+      sig
+    });
+    const link = `${PRESENCIA_URL}?${qp.toString()}`;
 
     await interaction.reply({
-      content: '📍 **Registrá tu presencia**\n\nAbrí este link desde tu celular o PC del colegio:\n' + link + '\n\nActivá la ubicación cuando lo pida. Si estás en el instituto, tu presencia se registra sola.',
+      embeds: [{
+        title: '📍 Registro personal de asistencia',
+        description:
+          `Este enlace fue generado exclusivamente para **${nombre}**.\n\n` +
+          `1. Abrilo desde tu celular.\n` +
+          `2. Permití **ubicación precisa**.\n` +
+          `3. Esperá el mensaje **Presencia registrada**.`,
+        color: 0x2563eb,
+        footer: { text: 'No compartas este enlace: está firmado para tu usuario de Discord.' }
+      }],
+      components: [new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setLabel('Abrir verificación GPS').setEmoji('🛰️').setStyle(ButtonStyle.Link).setURL(link)
+      )],
       ephemeral: true
     });
     return;
@@ -2008,59 +2114,6 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       }
 
       // ── CONFIRMAR PRESENCIA GPS ──
-      case 'confirmar': {
-        const codigo  = interaction.options.getString('codigo').toUpperCase().trim();
-        const sesion  = getSesion(interaction.guildId);
-        const uid     = interaction.user.id;
-
-        if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
-
-        const datos = codigosGPS.get(codigo);
-
-        if (!datos) {
-          await interaction.editReply('Código incorrecto o expirado. Volvé a abrir el link de asistencia y verificá tu ubicación de nuevo.');
-          break;
-        }
-        if (datos.usado) {
-          await interaction.editReply('Este código ya fue usado. Cada código funciona una sola vez.');
-          break;
-        }
-        if (Date.now() > datos.expira) {
-          codigosGPS.delete(codigo);
-          await interaction.editReply('El código expiró (dura 10 minutos). Abrí el link de nuevo y verificá tu ubicación.');
-          break;
-        }
-        if (sesion.asistentes.has(uid)) {
-          await interaction.editReply(`${getNombreReal(uid, interaction.member?.displayName || interaction.user.username)}, ya marcaste presente.`);
-          break;
-        }
-
-        // Todo OK — marcar presencia
-        datos.usado = true;
-        const nombre = getNombreReal(uid, datos.nombre || interaction.member?.displayName || interaction.user.username);
-        const hora   = horaAR();
-        sesion.asistentes.set(uid, { nombre, hora, metodo: 'gps', distancia: datos.distancia });
-        const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-        await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
-        // Guardar materia en el perfil del alumno
-        if (!registros.has(uid)) registros.set(uid, { nombreReal: nombre, discordUser: interaction.user.username, materia: mat, guildId: interaction.guildId, registradoEn: ahoraAR() });
-        else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
-        const p   = darPuntos(uid, nombre, 'asistencia');
-        const rol = getRol(p.pts);
-        await actualizarRol(interaction.member, p.pts);
-        const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
-        const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} **${l.nombre}**` : ''; }).join('\n') : '';
-        const regC = registros.get(uid);
-        const tieneNombreC = regC && regC.nombreRealConfirmado && regC.nombreReal && regC.nombreReal.trim().split(/\s+/).length >= 2;
-        const sinRegistro = !tieneNombreC ? '\n\n⚠️ Marcaste con tu nombre de Discord. Usá `/registrarme` con tu apellido y nombre completos para que tu asistencia cuente correctamente.' : '';
-        await interaction.editReply(
-          `✅ **${nombre}** — presencia a las **${hora}** (📍 ${datos.distancia}m del instituto)\n` +
-          `${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**` +
-          `${logroTxt}${sinRegistro}`
-        );
-        break;
-      }
-
       case 'codigo': {
         const sesion  = getSesion(interaction.guildId);
         if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
@@ -2097,27 +2150,28 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       // ── QR DE ASISTENCIA ──
       case 'qr-clase': {
         const s = getSesion(interaction.guildId);
-        if (!s.activa) { await interaction.editReply('Primero iniciá la clase con /iniciar-clase para generar el QR.'); break; }
-        const guild      = interaction.guild;
-        const guildName  = encodeURIComponent(guild?.name || interaction.guildId);
-        const titulo     = encodeURIComponent(s.titulo || 'Clase');
-        const tokenTs    = s.tokenTs || Date.now();
-        const token      = `${tokenTs}_${Math.random().toString(36).substring(2,8)}`;
-        const linkPresencia = `https://aulasvirtuales.name/presencia.html?token=${token}&uid=__UID__&guild=${guildName}&clase=${titulo}`;
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(linkPresencia)}&size=400x400&margin=20&bgcolor=ffffff&color=1e40af`;
-        const embed = {
-          title: `📱 QR de Asistencia — ${s.titulo || 'Clase de hoy'}`,
-          description:
-            `**Proyectá este QR en el aula**\n\n` +
-            `Los alumnos lo escanean con la cámara del celular.\n` +
-            `Se verifica que estén a menos de **15 metros** del instituto.\n\n` +
-            `⏰ Expira en **20 minutos** · 📅 ${s.fecha}\n\n` +
-            `*También pueden usar el link directo del mensaje de clase.*`,
-          color: 0x1e40af,
-          image: { url: qrUrl },
-          footer: { text: `Mentor 🎓 · ${guild?.name || ''}` }
-        };
-        await interaction.editReply({ content: '📱 **QR generado — proyectalo en el aula:**', embeds: [embed] });
+        if (!s.activa) { await interaction.editReply('Primero iniciá la clase con `/iniciar-clase`.'); break; }
+        if (!s.mensajeAsistenciaUrl) { await interaction.editReply('No encontré el mensaje de asistencia. Cerrá la clase e iniciála nuevamente.'); break; }
+
+        // El QR abre el mensaje original de Discord. Allí cada alumno pulsa el botón,
+        // y Discord genera un enlace GPS individual y firmado para su propia cuenta.
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?data=${encodeURIComponent(s.mensajeAsistenciaUrl)}&size=500x500&margin=24&bgcolor=ffffff&color=1e40af`;
+        await interaction.editReply({
+          embeds: [{
+            title: `Código QR de asistencia · ${s.titulo || 'Clase'}`,
+            description:
+              `Proyectá este QR. Al escanearlo, el alumno abre el mensaje de asistencia en Discord y pulsa **Registrar asistencia**.
+
+` +
+              `Así cada enlace queda asociado y firmado para la cuenta correcta.
+
+` +
+              `⏳ Vigencia restante: **${Math.max(0, Math.ceil((VENTANA_ASISTENCIA_MS - (Date.now() - s.tokenTs)) / 60000))} minutos**`,
+            color: 0x2563eb,
+            image: { url: qrUrl },
+            footer: { text: `Mentor 🎓 · ${interaction.guild?.name || ''}` }
+          }]
+        });
         break;
       }
 
