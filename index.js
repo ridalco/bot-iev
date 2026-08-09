@@ -1689,11 +1689,16 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
   // Confirmar la interacción inmediatamente. Discord exige una respuesta
   // inicial en pocos segundos; luego el comando puede continuar trabajando.
+  // Si la llamada REST se cuelga sin resolver ni fallar (pasó el 09/08),
+  // este timeout de 8s corta la espera y lo deja loggeado con claridad.
   try {
-    await interaction.deferReply();
+    await Promise.race([
+      interaction.deferReply(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout: deferReply no resolvió en 8s')), 8000)),
+    ]);
     LOG.info(`Interacción confirmada: /${interaction.commandName}`);
   } catch (e) {
-    LOG.error(`No se pudo confirmar /${interaction.commandName}; la interacción venció o la conexión está duplicada`, e);
+    LOG.error(`No se pudo confirmar /${interaction.commandName}; la interacción venció, se colgó, o la conexión está duplicada`, e);
     return;
   }
 
