@@ -276,25 +276,31 @@ http.createServer(async (req, res) => {
           }
           const nuevosLogros = verificarLogros(uid, nombreReal, p, sesion.canalNombre || '');
           guardarDatos();
-          await actualizarRol(miembro, p.pts).catch(() => {});
+          const canalObj = sesion.canalId ? await client.channels.fetch(sesion.canalId).catch(() => null) : null;
+          await actualizarRol(miembro, p.pts, canalObj).catch(() => {});
 
-          const logroMsg = nuevosLogros.length ? '\n' + nuevosLogros.map(id => {
+          const logroMsg = nuevosLogros.length ? nuevosLogros.map(id => {
             const l = LOGROS.find(x => x.id === id);
             return l ? `🏅 ${l.emoji} ${l.nombre}` : '';
-          }).filter(Boolean).join('\n') : '';
+          }).filter(Boolean).join('\n') : null;
 
-          await miembro.send(
-            `✅ **Presencia registrada — ${sesion.titulo}**
-` +
-            `📍 ${distancia} m del instituto · precisión ±${Math.round(precision)} m
-` +
-            `🕐 ${hora} · +10 pts · Total: ${p.pts} pts${logroMsg}`
-          ).catch(() => {});
+          const prog = progresoProximoNivel(p.pts);
+          const campos = [
+            { name: '🕐 Hora', value: hora, inline: true },
+            { name: '📍 Distancia', value: `${distancia} m (±${Math.round(precision)} m)`, inline: true },
+            { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
+          ];
+          if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
+          if (logroMsg) campos.push({ name: '🏅 ¡Nuevo logro!', value: logroMsg, inline: false });
 
-          if (sesion.canalId) {
-            const canalObj = await client.channels.fetch(sesion.canalId).catch(() => null);
-            if (canalObj) await canalObj.send(`✅ **${nombreReal}** registró su presencia · 🕐 ${hora} · 📍 ${distancia} m`).catch(() => {});
-          }
+          await miembro.send({ embeds: [{
+            title: `${getRol(p.pts).emoji} Presencia registrada`,
+            color: colorRol(p.pts),
+            description: `**${sesion.titulo}**\n+10 pts → **${p.pts} pts** totales`,
+            fields: campos,
+          }] }).catch(() => {});
+
+          if (canalObj) await canalObj.send(`✅ **${nombreReal}** registró su presencia · 🕐 ${hora} · 📍 ${distancia} m`).catch(() => {});
           LOG.info(`Presencia GPS segura: ${nombreReal}, ${distancia}m, precisión ±${Math.round(precision)}m`);
         } catch (e) {
           LOG.error('La presencia se registró, pero falló una tarea posterior', e);
@@ -349,7 +355,6 @@ const tareas      = new Map(); // id      → { titulo, descripcion, fecha, cana
 const eventos     = new Map(); // id      → { titulo, fecha, tipo, descripcion, avisados }
 const rubricas    = new Map(); // clave   → { materia, actividad, criterios: [{nombre, descripcion, peso}] }
 const historial   = new Map(); // userId  → [{ actividad, fecha, link, explicacion, evaluacion, pts }]
-const logros_def  = new Map(); // id      → { nombre, emoji, descripcion, condicion }
 const cacheIA     = new Map(); // hash    → { respuesta, expira }
 let tareaCounter  = 1;
 let eventoCounter = 1;
@@ -373,6 +378,7 @@ function cargarDatos() {
     if (raw.notas)           for (const [k, v] of Object.entries(raw.notas))          notas.set(k, v);
     if (raw.anunciosActivos) for (const [k, v] of Object.entries(raw.anunciosActivos)) anunciosActivos.set(k, v);
     if (raw.anuncioCounter)  anuncioCounter = raw.anuncioCounter;
+    if (raw.entregasPorActiv) for (const [k, v] of Object.entries(raw.entregasPorActiv)) entregasPorActiv.set(k, v);
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
         // Cerrar sesiones que quedaron activas de días anteriores (fantasma)
@@ -410,6 +416,7 @@ function guardarDatos() {
         notas:         Object.fromEntries(notas),
         anunciosActivos: Object.fromEntries(anunciosActivos),
         anuncioCounter: anuncioCounter,
+        entregasPorActiv: Object.fromEntries(entregasPorActiv),
         sesionActiva:  Object.fromEntries([...sesiones.entries()].map(([gid, s]) => [gid, {
           activa:               s.activa,
           asistentes:           s.asistentes ? Object.fromEntries(s.asistentes) : {},
@@ -670,6 +677,41 @@ function getRol(pts) {
   return              { nombre: 'Novato',              emoji: '🌱' };
 }
 
+/** Color decimal para embeds, según el rol actual del alumno */
+function colorRol(pts) {
+  if (pts >= 200) return 0xFFD700; // dorado — Experto Digital
+  if (pts >= 100) return 0xC0C0C0; // plateado — Colaborador Activo
+  if (pts >= 50)  return 0x4FC3F7; // celeste — Aprendiz
+  return              0x90A4AE; // gris — Novato
+}
+
+/** Barra de progreso visual tipo ████░░░░ para porcentajes */
+function barraProgreso(pct, largo = 14) {
+  const llenos = Math.max(0, Math.min(largo, Math.round((pct / 100) * largo)));
+  return '█'.repeat(llenos) + '░'.repeat(largo - llenos);
+}
+
+/** Detecta el nivel de evaluación de la IA en el texto de corrección, para colorear el embed */
+function colorEvaluacion(texto) {
+  const t = (texto || '').toLowerCase();
+  if (t.includes('excelente'))    return { color: 0xFFD700, emoji: '🌟', nivel: 'Excelente' };
+  if (t.includes('muy bueno'))    return { color: 0x4CAF50, emoji: '🟢', nivel: 'Muy bueno' };
+  if (t.includes('bueno'))        return { color: 0x8BC34A, emoji: '🟢', nivel: 'Bueno' };
+  if (t.includes('regular'))      return { color: 0xFFC107, emoji: '🟡', nivel: 'Regular' };
+  if (t.includes('insuficiente')) return { color: 0xF44336, emoji: '🔴', nivel: 'Insuficiente' };
+  return { color: 0x4FC3F7, emoji: '🤖', nivel: null };
+}
+
+/** Progreso hacia el próximo nivel — null si ya está en el máximo */
+function progresoProximoNivel(pts) {
+  const umbrales = [0, 50, 100, 200];
+  if (pts >= 200) return null;
+  let actual = 0, siguiente = 50;
+  for (const u of umbrales) { if (pts >= u) actual = u; else { siguiente = u; break; } }
+  const pct = Math.round(((pts - actual) / (siguiente - actual)) * 100);
+  return { pct, faltan: siguiente - pts };
+}
+
 const ROLES_DISCORD = [
   { nombre: 'Experto Digital',    minPts: 200, color: '#FFD700' },
   { nombre: 'Colaborador Activo', minPts: 100, color: '#C0C0C0' },
@@ -677,7 +719,7 @@ const ROLES_DISCORD = [
   { nombre: 'Novato',             minPts: 0,   color: '#90A4AE' },
 ];
 
-async function actualizarRol(member, pts) {
+async function actualizarRol(member, pts, channel = null) {
   // Verificar permisos antes de intentar — evita el error 50013 en logs
   try {
     const g    = member.guild;
@@ -689,6 +731,11 @@ async function actualizarRol(member, pts) {
         catch {} // ignorar si falla la creación
       }
     }
+    // Detectar el rol que tenía ANTES de tocar nada (para saber si subió de nivel)
+    const rolAntes = ROLES_DISCORD.find(rd => {
+      const r = g.roles.cache.find(r => r.name === rd.nombre);
+      return r && member.roles.cache.has(r.id);
+    });
     for (const rd of ROLES_DISCORD) {
       const r = g.roles.cache.find(r => r.name === rd.nombre);
       if (r && member.roles.cache.has(r.id)) { try { await member.roles.remove(r); } catch {} }
@@ -697,6 +744,18 @@ async function actualizarRol(member, pts) {
     if (rd) {
       const r = g.roles.cache.find(r => r.name === rd.nombre);
       if (r) { try { await member.roles.add(r); } catch {} }
+    }
+    // Si subió de nivel (no bajó) y tenemos un canal donde avisar, festejamos
+    if (channel && rd && (!rolAntes || rd.minPts > rolAntes.minPts)) {
+      const nombreEmoji = getRol(pts).emoji;
+      try {
+        await channel.send({
+          embeds: [{
+            color: colorRol(pts),
+            description: `🎉 **${member.displayName}** subió de nivel — ahora es **${nombreEmoji} ${rd.nombre}**`,
+          }]
+        });
+      } catch {}
     }
   } catch {} // silenciar completamente
 }
@@ -746,6 +805,7 @@ async function compararEntregas(guild, actividad, nombreNuevo, uidNuevo, conteni
     }
   }
   lista.push({ nombre: nombreNuevo, userId: uidNuevo, contenido, hora: horaAR() });
+  guardarDatos();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1119,7 +1179,7 @@ async function iniciarClase(channel, titulo, guildId) {
     if (sesActual.activa && sesActual.tokenTs === s.tokenTs) {
       await channel.send('⏰ **El link de asistencia expiró.** El profesor puede usar `/cerrar-clase` para ver el resumen.').catch(()=>{});
     }
-  }, 20 * 60 * 1000);
+  }, VENTANA_ASISTENCIA_MS);
 
   return true;
 }
@@ -1300,7 +1360,6 @@ client.once(Events.ClientReady, async (c) => {
   // (la clase sigue, pero ya nadie puede marcar presencia)
   setInterval(async () => {
     let cambios = false;
-    const VENTANA_ASISTENCIA = 20 * 60 * 1000; // 20 minutos para marcar presencia
     for (const [gid, s] of sesiones.entries()) {
       if (!s.activa) continue;
       if (!s.fecha || !s.tokenTs) continue;
@@ -1308,7 +1367,7 @@ client.once(Events.ClientReady, async (c) => {
       const transcurrido = Date.now() - s.tokenTs;
 
       // Pasados 20 min, cerrar la ventana de asistencia automáticamente
-      if (transcurrido > VENTANA_ASISTENCIA) {
+      if (transcurrido > VENTANA_ASISTENCIA_MS) {
         s.activa = false;
         s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps' }));
         s.fechaUltimaClase = s.fecha;
@@ -1514,16 +1573,20 @@ client.on(Events.MessageCreate, async (msg) => {
         // Solo sumar puntos si es la PRIMERA vez que entrega esta actividad — evita farmear puntos reenviando
         const p = yaEntrego ? (puntos.get(uid) || darPuntos(uid, nombre, 'entrega_sin_puntos')) : darPuntos(uid, nombre, 'entrega');
         if (yaEntrego) LOG.info(`${nombre} reentregó "${form.actividad}" — no se sumaron puntos de nuevo`);
-        await actualizarRol(msg.member, p.pts);
+        await actualizarRol(msg.member, p.pts, msg.channel);
         try {
           await msg.channel.sendTyping();
           const textoCorr = `Actividad: ${form.actividad}\nExplicación del alumno: ${form.explicacion}\n${form.comentario ? `Consulta del alumno: ${form.comentario}` : ''}\n${form.link !== 'Sin link' ? `Link: ${form.link}` : ''}`;
           const cor = await corregirEntrega(textoCorr, msg.guildId, msg.channel?.name);
-          if (cor) await msg.reply(safe(
-            `🤖 **Corrección de Mentor:**\n\n${cor}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-            `*⚠️ Orientativa. La nota final la define el profesor.*\n` +
-            `📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`
-          ));
+          if (cor) {
+            const evalInfo = colorEvaluacion(cor);
+            await msg.reply({ embeds: [{
+              title: `${evalInfo.emoji} Corrección de Mentor${evalInfo.nivel ? ' — ' + evalInfo.nivel : ''}`,
+              color: evalInfo.color,
+              description: safe(cor, 3800),
+              footer: { text: `⚠️ Orientativa — la nota final la define el profesor · +20 pts · Total: ${p.pts} pts` },
+            }] });
+          }
         } catch (e) { LOG.error('Error en corrección', e); }
         return;
       }
@@ -1611,7 +1674,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     let msg;
     if (resp === quiz.correcta) {
       const p3 = darPuntos(uid, nombre, 'quiz');
-      await actualizarRol(interaction.member, p3.pts);
+      await actualizarRol(interaction.member, p3.pts, interaction.channel);
       msg = `✅ **¡Correcto ${nombre}!** ${quiz.explicacion}\n\n+15 pts | Total: **${p3.pts} pts**`;
     } else {
       msg = `❌ **Incorrecto ${nombre}.** La correcta era: ${quiz.correcta}\n${quiz.explicacion}`;
@@ -1630,7 +1693,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     if (tarea.completados.has(uid)) { await interaction.reply({ content: `✅ **${nombre}**, ya marcaste esta tarea.`, ephemeral: true }); return; }
     tarea.completados.add(uid); guardarDatos();
     const p = darPuntos(uid, nombre, 'entrega');
-    await actualizarRol(interaction.member, p.pts);
+    await actualizarRol(interaction.member, p.pts, interaction.channel);
     const nlT = verificarLogros(uid, nombre, p, '');
     const lgT = nlT.length ? '\n' + nlT.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} **${l.nombre}**` : ''; }).join('\n') : '';
     await interaction.reply({ content: `✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}${lgT}` });
@@ -1907,7 +1970,12 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const top = getRanking();
         if (!top.length) { await interaction.editReply('No hay puntos todavía.'); break; }
         const M = ['🥇','🥈','🥉','4️⃣','5️⃣','6️⃣','7️⃣','8️⃣','9️⃣','🔟'];
-        await interaction.editReply(`🏆 **Ranking 2026**\n\n${top.map(([,p],i)=>`${M[i]} **${p.nombre}** — ${p.pts} pts ${getRol(p.pts).emoji}`).join('\n')}\n\n💡 Asistencia +10 | Entrega +20 | Pregunta +5`);
+        await interaction.editReply({ embeds: [{
+          title: '🏆 Ranking 2026',
+          color: colorRol(top[0][1].pts),
+          description: top.map(([,p],i)=>`${M[i]} **${p.nombre}** — ${p.pts} pts ${getRol(p.pts).emoji}`).join('\n'),
+          footer: { text: 'Asistencia +10 · Entrega +20 · Pregunta +5' },
+        }] });
         break;
       }
 
@@ -1925,9 +1993,20 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const pctAsist  = totalCls > 0 ? Math.round((p.asistencias / totalCls) * 100) : 0;
         const semaforo  = pctAsist >= 80 ? '🟢' : pctAsist >= 60 ? '🟡' : '🔴';
         const asistStr  = totalCls > 0
-          ? `✅ Asistencias: ${p.asistencias}/${totalCls} clases (${semaforo} **${pctAsist}%** — necesitás 80% para regularizar)`
-          : `✅ Asistencias: ${p.asistencias} (+${p.asistencias*10} pts)`;
-        await interaction.editReply(`${rol.emoji} **${nombre}** — ${rol.nombre}${prox}\n\n📊 **${p.pts} pts** | Posición **#${pos}** de ${tot} | 🔥 Racha: ${p.streak||0}\n\n${asistStr}\n📤 Entregas: ${p.entregas} (+${p.entregas*20} pts)\n💬 Preguntas: ${p.preguntas} (+${p.preguntas*5} pts)\n\n🏅 Logros: ${logrosObtenidos}\nUsá /mislogros para ver el detalle.`);
+          ? `\`${barraProgreso(pctAsist)}\` ${semaforo} **${pctAsist}%** — ${p.asistencias}/${totalCls} clases (necesitás 80% para regularizar)`
+          : `Todavía no hay clases dictadas — ${p.asistencias} asistencia${p.asistencias!==1?'s':''} registrada${p.asistencias!==1?'s':''}`;
+        await interaction.editReply({ embeds: [{
+          title: `${rol.emoji} ${nombre} — ${rol.nombre}`,
+          color: colorRol(p.pts),
+          description: prox ? `_${prox.replace(' · ','')}_` : '_Nivel máximo alcanzado_',
+          fields: [
+            { name: '📊 Puntos', value: `**${p.pts} pts** · Posición #${pos} de ${tot} · 🔥 Racha ${p.streak||0}`, inline: false },
+            { name: '✅ Asistencia', value: asistStr, inline: false },
+            { name: '📤 Entregas', value: `${p.entregas} (+${p.entregas*20} pts)`, inline: true },
+            { name: '💬 Preguntas', value: `${p.preguntas} (+${p.preguntas*5} pts)`, inline: true },
+            { name: '🏅 Logros', value: `${logrosObtenidos}\nUsá /mislogros para el detalle`, inline: false },
+          ],
+        }] });
         break;
       }
 
@@ -2084,7 +2163,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         des.soluciones.set(uid, { nombre, codigo, hora: horaAR() });
         const p  = darPuntos(uid, nombre, 'entrega');
         const p2 = darPuntos(uid, nombre, 'pregunta');
-        await actualizarRol(interaction.member, p2.pts);
+        await actualizarRol(interaction.member, p2.pts, interaction.channel);
         const ev = await llamarIA({ model: 'claude-sonnet-4-6', max_tokens: 400, messages: [{ role: 'user', content: `${CONTEXTOS[des.materia]||CONTEXTOS.iev}\nDesafio: ${des.enunciado}\nSolución de ${nombre}: ${codigo}\nEvaluá brevemente. Sé pedagógico y alentador.` }] });
         await interaction.editReply(safe(`✅ **${nombre}** — solución registrada.\n\n🤖 ${ev.content[0].text}\n\n📤 +25 pts | Total: **${p2.pts} pts**`));
         break;
@@ -2106,7 +2185,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const [gid, gd] = [...des.soluciones.entries()][0];
         const gm = await interaction.guild.members.fetch(gid).catch(()=>null);
         const pG = darPuntos(gid, gd.nombre, 'desafio');
-        if (gm) await actualizarRol(gm, pG.pts);
+        if (gm) await actualizarRol(gm, pG.pts, interaction.channel);
         desafioActivo = null;
         await interaction.editReply('✅ Desafio cerrado.');
         await interaction.channel.send(`🏆 **DESAFIO CERRADO** — ${des.soluciones.size} participantes\n🥇 **${gd.nombre}** — primera solución (${gd.hora})\n\n¡Felicitaciones a todos! Usá /ranking.`);
@@ -2151,7 +2230,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         if (tarea.completados.has(uid)) { await interaction.editReply(`✅ **${nombre}**, ya marcaste esta tarea.`); break; }
         tarea.completados.add(uid); guardarDatos();
         const p = darPuntos(uid, nombre, 'entrega');
-        await actualizarRol(interaction.member, p.pts);
+        await actualizarRol(interaction.member, p.pts, interaction.channel);
         await interaction.editReply(`✅ **${nombre}** completó **"${tarea.titulo}"**\n📤 +20 pts | Total: **${p.pts} pts** ${getRol(p.pts).emoji}`);
         break;
       }
@@ -2169,7 +2248,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'codigo': {
         const sesion  = getSesion(interaction.guildId);
         if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
-        if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > 20 * 60 * 1000) {
+        if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > VENTANA_ASISTENCIA_MS) {
           sesion.activa = false;
           await interaction.editReply('La ventana de asistencia (20 min) ya cerró. Avisale al profesor si llegaste tarde.');
           break;
@@ -2192,10 +2271,23 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
         const p   = darPuntos(uid, nombre, 'asistencia');
         const rol = getRol(p.pts);
-        await actualizarRol(interaction.member, p.pts);
+        await actualizarRol(interaction.member, p.pts, interaction.channel);
         const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
-        const logroTxt = nuevosLogros.length ? '\n' + nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 **Logro: ${l.emoji} ${l.nombre}**` : ''; }).join('\n') : '';
-        await interaction.editReply(`✅ **${nombre}** — presencia registrada con código a las **${hora}**\n${rol.emoji} +10 pts | Total: **${p.pts} pts** | Rol: **${rol.nombre}**${logroTxt}\n\n*📋 Registrada con código del pizarrón*`);
+        const logroTxt = nuevosLogros.length ? nuevosLogros.map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `🏅 ${l.emoji} ${l.nombre}` : ''; }).join('\n') : null;
+        const prog = progresoProximoNivel(p.pts);
+        const campos = [
+          { name: '🕐 Hora', value: hora, inline: true },
+          { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
+          { name: '📋 Método', value: 'Código del pizarrón', inline: true },
+        ];
+        if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
+        if (logroTxt) campos.push({ name: '🏅 ¡Nuevo logro!', value: logroTxt, inline: false });
+        await interaction.editReply({ embeds: [{
+          title: `${rol.emoji} ${nombre} — presencia registrada`,
+          color: colorRol(p.pts),
+          description: `+10 pts → **${p.pts} pts** totales`,
+          fields: campos,
+        }] });
         break;
       }
 
@@ -2287,38 +2379,40 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const rol   = p ? getRol(p.pts) : { nombre: 'Sin actividad', emoji: '⚪' };
         const pos   = p ? getPosicion(uid) : '—';
         const logrosObj = (p?.logros||[]).map(id => { const l = LOGROS.find(x=>x.id===id); return l ? `${l.emoji}` : ''; }).join(' ') || '—';
+        const totalCls = clasesTotales.get(interaction.guildId) || 0;
+        const pctAsist = totalCls > 0 && p ? Math.round((p.asistencias / totalCls) * 100) : null;
 
         // Predicción IA
         let prediccion = '';
         if (p && p.asistencias >= 2) {
-          const pctAsist = Math.round((p.asistencias / Math.max(p.asistencias + 2, 5)) * 100);
-          if (pctAsist >= 80 && p.entregas >= 2) prediccion = '🟢 Alta probabilidad de regularizar';
-          else if (pctAsist >= 60 || p.entregas >= 1) prediccion = '🟡 Probabilidad media — necesita más entregas';
+          const pctPred = Math.round((p.asistencias / Math.max(p.asistencias + 2, 5)) * 100);
+          if (pctPred >= 80 && p.entregas >= 2) prediccion = '🟢 Alta probabilidad de regularizar';
+          else if (pctPred >= 60 || p.entregas >= 1) prediccion = '🟡 Probabilidad media — necesita más entregas';
           else prediccion = '🔴 En riesgo — baja actividad';
         } else { prediccion = '⚪ Sin datos suficientes'; }
 
-        const ficha = safe(
-          `👤 **PERFIL ACADÉMICO — ${nombreRealP}**\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
-          `${rol.emoji} **Rol:** ${rol.nombre} | **Posición:** #${pos} del ranking\n` +
-          `🎓 **Carrera:** ${reg?.carrera || 'No especificada'}\n` +
-          `💬 **Discord:** @${reg?.discordUser || interaction.user.username}\n` +
-          `📅 **Registrado:** ${reg?.registradoEn || 'Sin registro'}\n\n` +
-          `━━ Actividad ━━\n` +
-          `📊 **Puntos totales:** ${p?.pts || 0}\n` +
-          `✅ **Asistencias:** ${p?.asistencias || 0} clases\n` +
-          `📤 **Entregas:** ${p?.entregas || 0} trabajos\n` +
-          `💬 **Preguntas a la IA:** ${p?.preguntas || 0}\n` +
-          `🔥 **Racha actual:** ${p?.streak || 0} clases\n\n` +
-          `━━ Logros ━━\n` +
-          `🏅 ${logrosObj} (${(p?.logros||[]).length}/${LOGROS.length})\n\n` +
-          `━━ Historial de entregas ━━\n` +
-          `${hist.length ? hist.slice(-5).reverse().map((h,i) => `${i+1}. **${h.actividad}** — ${h.fecha}`).join('\n') : 'Sin entregas registradas'}\n\n` +
-          `━━ Predicción IA ━━\n` +
-          `${prediccion}\n\n` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓 · ${fechaAR()}*`
-        );
-        await interaction.editReply(ficha);
+        const asistLinea = pctAsist === null
+          ? `${p?.asistencias || 0} asistencia${(p?.asistencias||0)!==1?'s':''}`
+          : `\`${barraProgreso(pctAsist)}\` ${pctAsist}% (${p.asistencias}/${totalCls})`;
+
+        await interaction.editReply({ embeds: [{
+          title: `${rol.emoji} ${nombreRealP}`,
+          color: colorRol(p?.pts || 0),
+          thumbnail: targetUser ? { url: targetUser.displayAvatarURL() } : { url: interaction.user.displayAvatarURL() },
+          fields: [
+            { name: '🎓 Carrera', value: reg?.carrera || 'No especificada', inline: true },
+            { name: '💬 Discord', value: `@${reg?.discordUser || interaction.user.username}`, inline: true },
+            { name: '📅 Registrado', value: reg?.registradoEn || 'Sin registro', inline: true },
+            { name: '📊 Puntos y posición', value: `**${p?.pts || 0} pts** · #${pos} del ranking · 🔥 Racha ${p?.streak || 0}`, inline: false },
+            { name: '✅ Asistencia', value: asistLinea, inline: false },
+            { name: '📤 Entregas', value: `${p?.entregas || 0} trabajos`, inline: true },
+            { name: '💬 Preguntas a la IA', value: `${p?.preguntas || 0}`, inline: true },
+            { name: '🏅 Logros', value: `${logrosObj} (${(p?.logros||[]).length}/${LOGROS.length})`, inline: false },
+            { name: '📋 Últimas entregas', value: hist.length ? hist.slice(-5).reverse().map((h,i) => `${i+1}. **${h.actividad}** — ${h.fecha}`).join('\n') : 'Sin entregas registradas', inline: false },
+            { name: '🔮 Predicción', value: prediccion, inline: false },
+          ],
+          footer: { text: `Mentor 🎓 · ${fechaAR()}` },
+        }] });
         break;
       }
 
