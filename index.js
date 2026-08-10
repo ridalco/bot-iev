@@ -751,7 +751,27 @@ async function compararEntregas(guild, actividad, nombreNuevo, uidNuevo, conteni
 // ════════════════════════════════════════════════════════════════
 // CLIENTE DISCORD Y ANTHROPIC
 // ════════════════════════════════════════════════════════════════
-const client    = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers] });
+// ════════════════════════════════════════════════════════════════
+// AGENTE HTTP PERSONALIZADO — evita el bug conocido de undici donde
+// conexiones reutilizadas ("keep-alive") quedan muertas en el pool
+// sin que nadie se entere, y el próximo pedido se cuelga esperando
+// respuesta de una conexión que ya no existe del otro lado.
+// Bajando el keepAliveTimeout, las conexiones se descartan mucho más
+// rápido en vez de quedar "colgadas" horas en el pool.
+// ════════════════════════════════════════════════════════════════
+let discordRestAgent;
+try {
+  const { Agent } = require('undici');
+  discordRestAgent = new Agent({ keepAliveTimeout: 1000, keepAliveMaxTimeout: 2000 });
+  LOG.info('Agente HTTP personalizado configurado (keepAlive corto).');
+} catch (e) {
+  LOG.warn('No se pudo configurar el agente HTTP personalizado, se usa el default de discord.js.');
+}
+
+const client    = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers],
+  ...(discordRestAgent ? { rest: { agent: discordRestAgent } } : {}),
+});
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
 // ════════════════════════════════════════════════════════════════
