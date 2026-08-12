@@ -12,10 +12,17 @@ const crypto = require('crypto');
 const {
   Client, GatewayIntentBits, Events,
   SlashCommandBuilder, REST, Routes,
-  ActionRowBuilder, ButtonBuilder, ButtonStyle
+  ActionRowBuilder, ButtonBuilder, ButtonStyle,
+  AttachmentBuilder
 } = require('discord.js');
 const Anthropic  = require('@anthropic-ai/sdk');
 const { google } = require('googleapis');
+
+// Generación de imágenes para /tarjeta — opcional: si el paquete no está
+// instalado, el bot sigue funcionando igual, solo /tarjeta avisa que no está disponible.
+let canvasLib = null;
+try { canvasLib = require('@napi-rs/canvas'); }
+catch { console.warn('[Mentor] @napi-rs/canvas no instalado — /tarjeta no va a estar disponible hasta agregarlo.'); }
 
 // ════════════════════════════════════════════════════════════════
 // LOGGING PROFESIONAL
@@ -287,7 +294,7 @@ http.createServer(async (req, res) => {
           const prog = progresoProximoNivel(p.pts);
           const campos = [
             { name: '🕐 Hora', value: hora, inline: true },
-            { name: '📍 Distancia', value: `${distancia} m (±${Math.round(precision)} m)`, inline: true },
+            { name: '📍 Ubicación', value: `${distancia} m del instituto (±${Math.round(precision)} m)`, inline: true },
             { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
           ];
           if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
@@ -710,6 +717,90 @@ function progresoProximoNivel(pts) {
   for (const u of umbrales) { if (pts >= u) actual = u; else { siguiente = u; break; } }
   const pct = Math.round(((pts - actual) / (siguiente - actual)) * 100);
   return { pct, faltan: siguiente - pts };
+}
+
+// ════════════════════════════════════════════════════════════════
+// TARJETA DE RANGO — imagen generada con avatar, rol y progreso
+// ════════════════════════════════════════════════════════════════
+async function generarTarjetaRango(member, nombreMostrar, p, pos, tot) {
+  if (!canvasLib) return null;
+  const { createCanvas, loadImage } = canvasLib;
+  const rol      = getRol(p.pts);
+  const colorHex = '#' + colorRol(p.pts).toString(16).padStart(6, '0');
+  const prog     = progresoProximoNivel(p.pts);
+
+  const W = 900, H = 300;
+  const canvas = createCanvas(W, H);
+  const ctx    = canvas.getContext('2d');
+
+  // Fondo degradé
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, '#0b1220');
+  grad.addColorStop(1, '#0d2440');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Franja de color según el rol, a la izquierda
+  ctx.fillStyle = colorHex;
+  ctx.fillRect(0, 0, 10, H);
+
+  // Avatar circular con borde del color del rol
+  const cx = 150, cy = 150, r = 90;
+  try {
+    const avatarUrl = member.displayAvatarURL({ extension: 'png', size: 256 });
+    const res = await fetch(avatarUrl);
+    if (res.ok) {
+      const buffer = Buffer.from(await res.arrayBuffer());
+      const img = await loadImage(buffer);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(img, cx - r, cy - r, r * 2, r * 2);
+      ctx.restore();
+    }
+  } catch {} // sin avatar, sigue con el fondo nomás
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = colorHex;
+  ctx.stroke();
+
+  // Nombre
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 42px sans-serif';
+  ctx.fillText(nombreMostrar.substring(0, 22), 290, 95);
+
+  // Rol y posición
+  ctx.font = '28px sans-serif';
+  ctx.fillStyle = colorHex;
+  ctx.fillText(`${rol.nombre} · #${pos} de ${tot}`, 290, 138);
+
+  // Puntos y racha
+  ctx.font = '22px sans-serif';
+  ctx.fillStyle = '#c7d3e0';
+  ctx.fillText(`${p.pts} pts totales · racha ${p.streak || 0} clases`, 290, 172);
+
+  // Barra de progreso
+  const barX = 290, barY = 200, barW = 540, barH = 30;
+  ctx.fillStyle = '#1c2b3f';
+  ctx.fillRect(barX, barY, barW, barH);
+  if (prog) {
+    ctx.fillStyle = colorHex;
+    ctx.fillRect(barX, barY, barW * (prog.pct / 100), barH);
+  } else {
+    ctx.fillStyle = colorHex;
+    ctx.fillRect(barX, barY, barW, barH);
+  }
+  ctx.strokeStyle = '#ffffff33';
+  ctx.strokeRect(barX, barY, barW, barH);
+
+  ctx.font = '20px sans-serif';
+  ctx.fillStyle = '#c7d3e0';
+  ctx.fillText(prog ? `Faltan ${prog.faltan} pts para el próximo nivel` : 'Nivel máximo alcanzado', barX, barY + barH + 30);
+
+  return canvas.toBuffer('image/png');
 }
 
 const ROLES_DISCORD = [
@@ -1219,6 +1310,7 @@ const commands = [
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y posición'),
+  new SlashCommandBuilder().setName('tarjeta').setDescription('🖼️ Ver tu tarjeta de rango como imagen'),
   new SlashCommandBuilder().setName('entrega').setDescription('Ver instrucciones para entregar trabajos'),
   new SlashCommandBuilder().setName('herramientas').setDescription('Links y herramientas del curso'),
   new SlashCommandBuilder().setName('tareas').setDescription('Ver todas las tareas activas'),
@@ -2010,6 +2102,25 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         break;
       }
 
+      case 'tarjeta': {
+        if (!canvasLib) { await interaction.editReply('❌ La generación de imágenes no está disponible todavía en este servidor.'); break; }
+        const uid    = interaction.user.id;
+        const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+        if (!puntos.has(uid)) { await interaction.editReply('Todavía no tenés puntos. Marcá presencia o hacé una pregunta para empezar.'); break; }
+        const p   = puntos.get(uid);
+        const pos = getPosicion(uid);
+        const tot = getRankingCompleto().length;
+        try {
+          const buffer = await generarTarjetaRango(interaction.member, nombre, p, pos, tot);
+          const archivo = new AttachmentBuilder(buffer, { name: 'tarjeta.png' });
+          await interaction.editReply({ files: [archivo] });
+        } catch (e) {
+          LOG.error('Error generando tarjeta de rango', e);
+          await interaction.editReply('❌ No se pudo generar la tarjeta. Probá de nuevo en un rato.');
+        }
+        break;
+      }
+
       case 'entrega':
         await interaction.editReply('Para entregar un trabajo:\n\n1. Andá al canal **#entregas** de tu materia\n2. Escribí cualquier mensaje para abrir el formulario\n3. Seguí los 4 pasos\n4. Recibirás una corrección automática como orientación\n\nNo se aceptan entregas por WhatsApp o mensajes privados.');
         break;
@@ -2278,7 +2389,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const campos = [
           { name: '🕐 Hora', value: hora, inline: true },
           { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
-          { name: '📋 Método', value: 'Código del pizarrón', inline: true },
+          { name: '📍 Ubicación', value: 'Sin verificar — código del pizarrón', inline: true },
         ];
         if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
         if (logroTxt) campos.push({ name: '🏅 ¡Nuevo logro!', value: logroTxt, inline: false });
