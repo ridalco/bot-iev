@@ -803,6 +803,53 @@ async function generarTarjetaRango(member, nombreMostrar, p, pos, tot) {
   return canvas.toBuffer('image/png');
 }
 
+// ════════════════════════════════════════════════════════════════
+// GRÁFICO DE BOLETÍN — barras horizontales coloreadas por promedio
+// ════════════════════════════════════════════════════════════════
+function generarGraficoBoletin(alumnos, titulo) {
+  if (!canvasLib) return null;
+  const { createCanvas } = canvasLib;
+  const ordenados = [...alumnos].sort((a, b) => b.promedio - a.promedio);
+
+  const W = 900;
+  const filaAlto = 44;
+  const H = 110 + ordenados.length * filaAlto;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillText(titulo, 30, 50);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#8fa3bd';
+  ctx.fillText(`${ordenados.length} alumno${ordenados.length !== 1 ? 's' : ''}`, 30, 78);
+
+  const labelW = 220, barX = 250, barMaxW = 560, barH = 26;
+  let y = 110;
+  for (const al of ordenados) {
+    const color = al.promedio >= 8 ? '#4CAF50' : al.promedio >= 6 ? '#FFC107' : '#F44336';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(al.nombre.substring(0, 24), 30, y + barH - 6, labelW);
+
+    ctx.fillStyle = '#1c2b3f';
+    ctx.fillRect(barX, y, barMaxW, barH);
+    ctx.fillStyle = color;
+    ctx.fillRect(barX, y, barMaxW * (al.promedio / 10), barH);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(al.promedio.toFixed(1), barX + barMaxW + 15, y + barH - 6);
+
+    y += filaAlto;
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
 const ROLES_DISCORD = [
   { nombre: 'Experto Digital',    minPts: 200, color: '#FFD700' },
   { nombre: 'Colaborador Activo', minPts: 100, color: '#C0C0C0' },
@@ -840,12 +887,26 @@ async function actualizarRol(member, pts, channel = null) {
     if (channel && rd && (!rolAntes || rd.minPts > rolAntes.minPts)) {
       const nombreEmoji = getRol(pts).emoji;
       try {
-        await channel.send({
+        const mensaje = {
           embeds: [{
             color: colorRol(pts),
             description: `🎉 **${member.displayName}** subió de nivel — ahora es **${nombreEmoji} ${rd.nombre}**`,
           }]
-        });
+        };
+        // Adjuntamos la tarjeta visual si la generación de imágenes está disponible
+        if (canvasLib) {
+          try {
+            const pData = puntos.get(member.id);
+            if (pData) {
+              const pos = getPosicion(member.id);
+              const tot = getRankingCompleto().length;
+              const nombreMostrar = getNombreReal(member.id, member.displayName);
+              const buffer = await generarTarjetaRango(member, nombreMostrar, pData, pos, tot);
+              if (buffer) mensaje.files = [new AttachmentBuilder(buffer, { name: 'tarjeta.png' })];
+            }
+          } catch {} // si falla la imagen, igual mandamos el aviso de texto
+        }
+        await channel.send(mensaje);
       } catch {}
     }
   } catch {} // silenciar completamente
@@ -2615,13 +2676,26 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'boletin-notas': {
         if (!notas.size) { await interaction.editReply('No hay notas registradas todavía.'); break; }
         let msgB = '📋 **Boletín — '+interaction.guild?.name+'**\n📅 '+fechaAR()+'\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n';
+        const alumnosGrafico = [];
         for (const [uid, lista] of notas.entries()) {
           if (!lista.length) continue;
           const nom = getNombreReal(uid, puntos.get(uid)?.nombre || uid);
           const pr  = Math.round(lista.reduce((a,n)=>a+n.nota,0)/lista.length*10)/10;
           msgB += notaEmoji(pr)+' **'+nom+'** — '+pr+'/10 ('+lista.length+' actividad'+(lista.length!==1?'es':'')+')'+'\n';
+          alumnosGrafico.push({ nombre: nom, promedio: pr });
         }
         msgB += '\n━━━━━━━━━━━━━━━━━━━━━━━━\nUsá /notas-alumno para el detalle.';
+
+        if (canvasLib && alumnosGrafico.length) {
+          try {
+            const buffer = generarGraficoBoletin(alumnosGrafico, `Boletín — ${interaction.guild?.name || ''}`);
+            if (buffer) {
+              const archivo = new AttachmentBuilder(buffer, { name: 'boletin.png' });
+              await interaction.editReply({ content: safe(msgB, 1900), files: [archivo] });
+              break;
+            }
+          } catch (e) { LOG.error('Error generando gráfico de boletín', e); }
+        }
         await enviarLargo(interaction, msgB);
         break;
       }
