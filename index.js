@@ -524,7 +524,8 @@ const SOLO_PROFESOR = new Set([
   'iniciar-clase','cerrar-clase','noticias','evento','borrar-evento',
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
   'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
-  'nota','notas-alumno','boletin-notas','anuncio','asignar-materia','exportar','cierre'
+  'nota','notas-alumno','boletin-notas','anuncio','asignar-materia','exportar','cierre',
+  'asistencia-general','ajustar-asistencia'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -843,6 +844,53 @@ function generarGraficoBoletin(alumnos, titulo) {
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 18px sans-serif';
     ctx.fillText(al.promedio.toFixed(1), barX + barMaxW + 15, y + barH - 6);
+
+    y += filaAlto;
+  }
+
+  return canvas.toBuffer('image/png');
+}
+
+// ════════════════════════════════════════════════════════════════
+// GRÁFICO DE ASISTENCIA — barras horizontales por % (80/60 de corte)
+// ════════════════════════════════════════════════════════════════
+function generarGraficoAsistencia(alumnos, titulo) {
+  if (!canvasLib) return null;
+  const { createCanvas } = canvasLib;
+  const ordenados = [...alumnos].sort((a, b) => b.pct - a.pct);
+
+  const W = 900;
+  const filaAlto = 44;
+  const H = 110 + ordenados.length * filaAlto;
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillText(titulo, 30, 50);
+  ctx.font = '18px sans-serif';
+  ctx.fillStyle = '#8fa3bd';
+  ctx.fillText(`${ordenados.length} alumno${ordenados.length !== 1 ? 's' : ''}`, 30, 78);
+
+  const barX = 250, barMaxW = 560, barH = 26;
+  let y = 110;
+  for (const al of ordenados) {
+    const color = al.pct >= 80 ? '#4CAF50' : al.pct >= 60 ? '#FFC107' : '#F44336';
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '20px sans-serif';
+    ctx.fillText(al.nombre.substring(0, 24), 30, y + barH - 6);
+
+    ctx.fillStyle = '#1c2b3f';
+    ctx.fillRect(barX, y, barMaxW, barH);
+    ctx.fillStyle = color;
+    ctx.fillRect(barX, y, barMaxW * (al.pct / 100), barH);
+
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 18px sans-serif';
+    ctx.fillText(`${al.pct}%`, barX + barMaxW + 15, y + barH - 6);
 
     y += filaAlto;
   }
@@ -1438,6 +1486,13 @@ const commands = [
     .addIntegerOption(o => o.setName('unidad_desde').setDescription('Unidad desde (ej: 1)').setRequired(true).setMinValue(1).setMaxValue(8))
     .addIntegerOption(o => o.setName('unidad_hasta').setDescription('Unidad hasta (ej: 4)').setRequired(true).setMinValue(1).setMaxValue(8)),
   new SlashCommandBuilder().setName('riesgo').setDescription('👨‍🏫 Ver alumnos con baja asistencia'),
+  new SlashCommandBuilder().setName('asistencia-general').setDescription('👨‍🏫 Ver % de asistencia de todos los alumnos, con gráfico'),
+  new SlashCommandBuilder().setName('ajustar-asistencia')
+    .setDescription('👨‍🏫 Corregir a mano la cantidad de presencias de un alumno')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno a corregir').setRequired(true))
+    .addIntegerOption(o => o.setName('cantidad').setDescription('+1 para sumar una presencia, -1 para restar').setRequired(true).addChoices(
+      { name: '+1 (sumar una presencia)', value: 1 }, { name: '-1 (restar una presencia)', value: -1 }))
+    .addStringOption(o => o.setName('motivo').setDescription('Por qué se corrige (queda registrado)').setRequired(true)),
   new SlashCommandBuilder().setName('torneo').setDescription('👨‍🏫 Iniciar torneo de quizzes entre todos'),
   new SlashCommandBuilder().setName('logros').setDescription('👨‍🏫 Ver todos los logros disponibles'),
   new SlashCommandBuilder().setName('qr-clase').setDescription('👨‍🏫 Generar QR de asistencia para proyectar'),
@@ -2984,6 +3039,75 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           }]
         });
         await interaction.editReply(safe(`📝 **PARCIAL — Unidades ${desde} a ${hasta}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}`));
+        break;
+      }
+
+      case 'asistencia-general': {
+        const totalCl = clasesTotales.get(interaction.guildId) || 0;
+        if (totalCl === 0) { await interaction.editReply('Todavía no hay clases dictadas para calcular asistencia.'); break; }
+        const alumnos = [...registros.entries()].filter(([, r]) => r.guildId === interaction.guildId);
+        if (!alumnos.length) { await interaction.editReply('No hay alumnos registrados todavía. Pediles que usen /registrarme.'); break; }
+
+        const filas = alumnos.map(([uid, r]) => {
+          const p = puntos.get(uid);
+          const presentes = p?.asistencias || 0;
+          const ausentes  = Math.max(0, totalCl - presentes);
+          const pct = Math.round((presentes / totalCl) * 100);
+          return { nombre: r.nombreReal, presentes, ausentes, pct };
+        }).sort((a, b) => b.pct - a.pct);
+
+        const promedioGeneral = Math.round(filas.reduce((s, f) => s + f.pct, 0) / filas.length);
+        const lista = filas.map((f, i) => {
+          const sem = f.pct >= 80 ? '🟢' : f.pct >= 60 ? '🟡' : '🔴';
+          return `${i+1}. ${sem} **${f.nombre}** — ${f.pct}% (${f.presentes} presente${f.presentes!==1?'s':''} · ${f.ausentes} ausente${f.ausentes!==1?'s':''})`;
+        }).join('\n');
+
+        const msgAsist = safe(
+          `📊 **Asistencia general — ${interaction.guild?.name}**\n` +
+          `📅 ${totalCl} clase${totalCl!==1?'s':''} dictada${totalCl!==1?'s':''} · Promedio del curso: **${promedioGeneral}%**\n` +
+          `━━━━━━━━━━━━━━━━━━━━━━━━\n\n${lista}`, 1900
+        );
+
+        if (canvasLib) {
+          try {
+            const buffer = generarGraficoAsistencia(filas.map(f => ({ nombre: f.nombre, pct: f.pct })), `Asistencia — ${interaction.guild?.name || ''}`);
+            if (buffer) {
+              const archivo = new AttachmentBuilder(buffer, { name: 'asistencia.png' });
+              await interaction.editReply({ content: msgAsist, files: [archivo] });
+              break;
+            }
+          } catch (e) { LOG.error('Error generando gráfico de asistencia', e); }
+        }
+        await enviarLargo(interaction, msgAsist);
+        break;
+      }
+
+      case 'ajustar-asistencia': {
+        const alumnoObj = interaction.options.getUser('alumno');
+        const cantidad  = interaction.options.getInteger('cantidad');
+        const motivo    = interaction.options.getString('motivo');
+        const uid       = alumnoObj.id;
+        const nombre    = getNombreReal(uid, alumnoObj.username);
+
+        if (cantidad > 0) {
+          const p = darPuntos(uid, nombre, 'asistencia');
+          const miembroObjetivo = await interaction.guild.members.fetch(uid).catch(() => null);
+          if (miembroObjetivo) await actualizarRol(miembroObjetivo, p.pts, interaction.channel);
+          LOG.info(`Ajuste manual +1 asistencia: ${nombre} por ${interaction.user.username} — motivo: ${motivo}`);
+          await interaction.editReply(`✅ Ajustado: **${nombre}** +1 presencia (ahora ${p.asistencias} en total).\n📋 Motivo: ${motivo}`);
+        } else {
+          if (!puntos.has(uid) || !puntos.get(uid).asistencias) {
+            await interaction.editReply(`${nombre} no tiene presencias registradas para restar.`);
+            break;
+          }
+          const p = puntos.get(uid);
+          p.asistencias = Math.max(0, (p.asistencias || 0) - 1);
+          p.pts = Math.max(0, p.pts - 10);
+          puntos.set(uid, p);
+          guardarDatos();
+          LOG.info(`Ajuste manual -1 asistencia: ${nombre} por ${interaction.user.username} — motivo: ${motivo}`);
+          await interaction.editReply(`✅ Ajustado: **${nombre}** -1 presencia (ahora ${p.asistencias} en total).\n📋 Motivo: ${motivo}`);
+        }
         break;
       }
 
