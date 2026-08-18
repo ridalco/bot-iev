@@ -98,6 +98,15 @@ const INSTITUTOS_GPS = {
     lat: Number(process.env.IES11_LAT || -24.1892),
     lng: Number(process.env.IES11_LNG || -65.2987),
     radio: Number(process.env.IES11_RADIO || 150)
+  },
+  ucse: {
+    // ⚠️ SIN VERIFICAR — coordenada aproximada del centro de San Salvador de Jujuy,
+    // NO la dirección real (Lavalle 333). Corregir con UCSE_LAT / UCSE_LNG en Render
+    // apenas se tenga la ubicación exacta del aula, tomada desde Google Maps.
+    nombre: 'UCSE — Departamento Académico San Salvador',
+    lat: Number(process.env.UCSE_LAT || -24.1892),
+    lng: Number(process.env.UCSE_LNG || -65.2987),
+    radio: Number(process.env.UCSE_RADIO || 150)
   }
 };
 
@@ -113,6 +122,7 @@ function calcularDistanciaMetros(lat1, lng1, lat2, lng2) {
 
 function institutoParaGuild(guildId) {
   const nombre = (client?.guilds?.cache?.get(guildId)?.name || '').toLowerCase();
+  if (nombre.includes('ucse')) return INSTITUTOS_GPS.ucse;
   return (nombre.includes('11') || nombre.includes('alvear')) ? INSTITUTOS_GPS.ies11 : INSTITUTOS_GPS.ies6;
 }
 
@@ -576,9 +586,10 @@ Unidades BD: 1-Introducción BD/SGBD, 2-Diseño E-R, 3-Modelo Relacional/Normali
 Unidades Programación: 5-Java (tipos, POO, clases, colecciones), 6-Spring Boot y MVC (framework, controladores, Bootstrap, Thymeleaf), 7-Git y Maven (versionamiento, dependencias), 8-JPA y persistencia (CrudRepository, JpaRepository).
 Usá Java y Spring Boot en los ejemplos de código.`,
 
-  annum: `Sos el asistente de "Análisis Numérico" de Ingeniería Informática, UCSE (Sistema de Educación Multimodal).
-Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
-Unidades: 1-Errores y aproximación numérica, 2-Resolución de ecuaciones no lineales (bisección, Newton-Raphson, punto fijo), 3-Sistemas de ecuaciones lineales (Gauss, Gauss-Seidel, factorización LU), 4-Interpolación y ajuste de curvas (Lagrange, mínimos cuadrados), 5-Diferenciación e integración numérica (trapecio, Simpson), 6-Ecuaciones diferenciales ordinarias (Euler, Runge-Kutta).
+  annum: `Sos el asistente de "Análisis Numérico" de Ingeniería en Informática (3° año), UCSE — Departamento Académico San Salvador. Cátedra a cargo del Ing. Víctor Marcial Aizama, JTP Prof. Ing. Corimayo Ricardo Daniel.
+Respondé en español, claro y pedagógico.
+Temas (12): 1-Preliminares matemáticos y computadoras personales, 2-La programación en PC, 3-Aproximaciones y errores (cifras significativas, error relativo/verdadero, redondeo, truncamiento, Serie de Taylor), 4-Raíces de ecuaciones (bisección, regla falsa, punto fijo, Newton-Raphson, secante), 5-Casos prácticos de raíces, 6-Sistemas de ecuaciones lineales (matrices, eliminación gaussiana), 7-Métodos para sistemas lineales (Gauss-Jordan, Gauss-Seidel, Gauss-Doolittle, Cholesky), 8-Casos prácticos de sistemas lineales, 9-Ajuste de curvas (regresión lineal, interpolación de Lagrange y Legendre), 10-Casos prácticos de ajuste de curvas, 11-Diferenciación e integración numérica (Richardson, Romberg), 12-Ecuaciones diferenciales ordinarias (Euler, Taylor de orden superior, Runge-Kutta).
+Evaluación: regulariza con 2 parciales prácticos aprobados con 70% mínimo; examen final requiere 50%. Promociona con 70% de guías de TP resueltas y parciales aprobados.
 Usá Python (numpy/scipy) u Octave/MATLAB en los ejemplos de código, según lo que pida el alumno.`,
 };
 
@@ -629,12 +640,18 @@ const UNIDADES = {
     8: '🔌 **PyBD U8: Clases y Persistencia con JPA**\nInyección de dependencias, JPA/Spring Boot, CrudRepository, JpaRepository, Query Methods.',
   },
   annum: {
-    1: '📐 **Análisis Numérico U1: Errores y Aproximación**\nError absoluto y relativo, propagación de errores, aritmética de punto flotante.',
-    2: '🎯 **Análisis Numérico U2: Ecuaciones No Lineales**\nMétodo de bisección, Newton-Raphson, punto fijo. Convergencia y criterios de parada.',
-    3: '🔢 **Análisis Numérico U3: Sistemas de Ecuaciones Lineales**\nEliminación gaussiana, factorización LU, métodos iterativos (Gauss-Seidel, Jacobi).',
-    4: '📈 **Análisis Numérico U4: Interpolación y Ajuste**\nInterpolación de Lagrange, diferencias divididas de Newton, mínimos cuadrados.',
-    5: '∫ **Análisis Numérico U5: Diferenciación e Integración Numérica**\nDiferencias finitas, regla del trapecio, regla de Simpson.',
-    6: '🌀 **Análisis Numérico U6: Ecuaciones Diferenciales Ordinarias**\nMétodo de Euler, Runge-Kutta de 2° y 4° orden.',
+    1: '💻 **Análisis Numérico Tema 1: Preliminares Matemáticos y las Computadoras Personales**\nEl uso del análisis numérico antes de la computadora. Los métodos numéricos y la práctica de la ingeniería. Fundamentos matemáticos. Alcance, contenido, metas y objetivos.',
+    2: '🖥️ **Análisis Numérico Tema 2: La Programación en PC**\nAntecedentes históricos. Desarrollo de programas y diseño de algoritmos. Comparación de lenguajes. Almacenamiento y mantenimiento. Estrategias de programación.',
+    3: '📏 **Análisis Numérico Tema 3: Aproximaciones y Errores**\nCifras significativas, exactitud y precisión. Error relativo y verdadero. Estimación de error en métodos iterativos. Errores de redondeo y truncamiento. Serie de Taylor y análisis del residuo. Error numérico total.',
+    4: '🎯 **Análisis Numérico Tema 4: Raíces de Ecuaciones**\nMétodos gráficos que usan intervalos. Bisección (criterios de paro, estimación de errores) y Regla Falsa. Métodos abiertos: Punto Fijo, Newton-Raphson, Secante, raíces múltiples. Comparación entre métodos.',
+    5: '🧩 **Análisis Numérico Tema 5: Casos Prácticos a Raíces de Ecuaciones**\nDiscusión y análisis de casos reales que requieren resolución numérica de raíces.',
+    6: '🔢 **Análisis Numérico Tema 6: Sistemas de Ecuaciones Algebraicas Lineales**\nRepresentación con matrices. Método gráfico y eliminación gaussiana. Sistemas mal condicionados. Técnicas de mejoramiento y corrección de errores.',
+    7: '📐 **Análisis Numérico Tema 7: Métodos para Resolución de Sistemas de Ecuaciones Lineales**\nGauss-Jordan, Gauss-Seidel, Gauss-Doolittle, inversión de matrices, Cholesky. Mejoramiento iterativo, convergencia y error de redondeo.',
+    8: '🧩 **Análisis Numérico Tema 8: Casos Prácticos a Sistemas de Ecuaciones Lineales**\nResolución de problemas prácticos con distintos algoritmos, comparando ventajas y desventajas.',
+    9: '📈 **Análisis Numérico Tema 9: Ajuste de Curvas**\nRegresión lineal y sus implicancias estadísticas. Interpolación: diferencias divididas, polinomios de Lagrange y Legendre.',
+    10:'🧩 **Análisis Numérico Tema 10: Casos Prácticos de Ajuste de Curvas**\nResolución de problemas de regresión e interpolación, con justificación estadística del modelo elegido.',
+    11:'∫ **Análisis Numérico Tema 11: Diferenciación e Integración Numérica**\nDiferenciación numérica. Extrapolación de Richardson. Integración de Romberg. Aplicaciones especiales.',
+    12:'🌀 **Análisis Numérico Tema 12: Ecuaciones Diferenciales Ordinarias**\nProblemas de valor inicial. Método de Euler, Método de Taylor de orden superior, Método de Runge-Kutta. Ecuaciones de orden superior.',
   },
 };
 
@@ -1431,7 +1448,7 @@ const commands = [
   // Alumnos
   new SlashCommandBuilder().setName('asistencia').setDescription('Ver asistencia del día'),
   new SlashCommandBuilder().setName('preguntar').setDescription('Preguntá a la IA sobre la materia').addStringOption(o => o.setName('pregunta').setDescription('Tu pregunta').setRequired(true)),
-  new SlashCommandBuilder().setName('unidad').setDescription('Ver contenido de una unidad').addIntegerOption(o => o.setName('numero').setDescription('Número de unidad (1-8)').setRequired(true).setMinValue(1).setMaxValue(8)),
+  new SlashCommandBuilder().setName('unidad').setDescription('Ver contenido de una unidad').addIntegerOption(o => o.setName('numero').setDescription('Número de unidad/tema (1-12)').setRequired(true).setMinValue(1).setMaxValue(12)),
   new SlashCommandBuilder().setName('craap').setDescription('Evaluar una fuente con criterio CRAAP').addStringOption(o => o.setName('url').setDescription('URL a evaluar').setRequired(true)),
   new SlashCommandBuilder().setName('ranking').setDescription('Ver el ranking de participación'),
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y posición'),
@@ -1442,7 +1459,7 @@ const commands = [
   new SlashCommandBuilder().setName('completar').setDescription('Marcar una tarea como completada').addIntegerOption(o => o.setName('id').setDescription('ID de la tarea').setRequired(true)),
   new SlashCommandBuilder().setName('calendario').setDescription('Ver todos los eventos del cuatrimestre'),
   new SlashCommandBuilder().setName('proximo').setDescription('Ver el próximo evento importante'),
-  new SlashCommandBuilder().setName('quiz').setDescription('Quiz interactivo (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad').setRequired(true).setMinValue(1).setMaxValue(8)),
+  new SlashCommandBuilder().setName('quiz').setDescription('Quiz interactivo (+15 pts si aprobás)').addIntegerOption(o => o.setName('unidad').setDescription('Número de unidad/tema').setRequired(true).setMinValue(1).setMaxValue(12)),
   new SlashCommandBuilder().setName('solucionar').setDescription('Enviar solución al desafio activo').addStringOption(o => o.setName('codigo').setDescription('Tu solución').setRequired(true)),
   new SlashCommandBuilder().setName('moodle').setDescription('Ver estado de conexión con Moodle'),
   new SlashCommandBuilder().setName('miscursos').setDescription('Ver tus cursos activos en Moodle'),
