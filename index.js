@@ -276,7 +276,7 @@ http.createServer(async (req, res) => {
           const mat = detectarMateria(guildId, sesion.canalNombre || '');
           await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '');
           const p = darPuntos(uid, nombreReal, 'asistencia');
-          const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+          const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
           if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: miembro.user.username, materia: MNOM[mat] || mat, guildId, registradoEn: ahoraAR() });
           else if (!registros.get(uid).materia) {
             const r = registros.get(uid); r.materia = MNOM[mat] || mat; r.guildId = guildId; registros.set(uid, r);
@@ -538,9 +538,11 @@ function detectarMateria(guildId, channelName = '') {
   if (c.includes('bd')    || c.includes('base')    || c.includes('datos'))                                                            return 'bd';
   if (c.includes('info')  || c.includes('informatica'))                                                                               return 'informatica';
   if (c.includes('iev')   || c.includes('internet') || c.includes('entornos'))                                                       return 'iev';
+  if (c.includes('analisis') || c.includes('numeric') || c.includes('annum') || c.includes('ucse'))                                   return 'annum';
   const guild = client.guilds.cache.get(guildId);
   if (guild) {
     const s = guild.name.toLowerCase();
+    if (s.includes('ucse')) return 'annum';
     if (s.includes('11')) return 'bd';
     if (s.includes('6'))  return 'iev';
   }
@@ -573,6 +575,11 @@ Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
 Unidades BD: 1-Introducción BD/SGBD, 2-Diseño E-R, 3-Modelo Relacional/Normalización, 4-SQL (DDL/DML/DCL/TCL/ACID).
 Unidades Programación: 5-Java (tipos, POO, clases, colecciones), 6-Spring Boot y MVC (framework, controladores, Bootstrap, Thymeleaf), 7-Git y Maven (versionamiento, dependencias), 8-JPA y persistencia (CrudRepository, JpaRepository).
 Usá Java y Spring Boot en los ejemplos de código.`,
+
+  annum: `Sos el asistente de "Análisis Numérico" de Ingeniería Informática, UCSE (Sistema de Educación Multimodal).
+Prof. Ing. Corimayo Ricardo Daniel. Respondé en español, claro y pedagógico.
+Unidades: 1-Errores y aproximación numérica, 2-Resolución de ecuaciones no lineales (bisección, Newton-Raphson, punto fijo), 3-Sistemas de ecuaciones lineales (Gauss, Gauss-Seidel, factorización LU), 4-Interpolación y ajuste de curvas (Lagrange, mínimos cuadrados), 5-Diferenciación e integración numérica (trapecio, Simpson), 6-Ecuaciones diferenciales ordinarias (Euler, Runge-Kutta).
+Usá Python (numpy/scipy) u Octave/MATLAB en los ejemplos de código, según lo que pida el alumno.`,
 };
 
 function getContexto(guildId, ch) { return CONTEXTOS[detectarMateria(guildId, ch)] || CONTEXTOS.iev; }
@@ -621,6 +628,14 @@ const UNIDADES = {
     7: '🐙 **PyBD U7: Git y Maven**\nControl de versiones, integración con IDE, gestión de dependencias, arquetipos.',
     8: '🔌 **PyBD U8: Clases y Persistencia con JPA**\nInyección de dependencias, JPA/Spring Boot, CrudRepository, JpaRepository, Query Methods.',
   },
+  annum: {
+    1: '📐 **Análisis Numérico U1: Errores y Aproximación**\nError absoluto y relativo, propagación de errores, aritmética de punto flotante.',
+    2: '🎯 **Análisis Numérico U2: Ecuaciones No Lineales**\nMétodo de bisección, Newton-Raphson, punto fijo. Convergencia y criterios de parada.',
+    3: '🔢 **Análisis Numérico U3: Sistemas de Ecuaciones Lineales**\nEliminación gaussiana, factorización LU, métodos iterativos (Gauss-Seidel, Jacobi).',
+    4: '📈 **Análisis Numérico U4: Interpolación y Ajuste**\nInterpolación de Lagrange, diferencias divididas de Newton, mínimos cuadrados.',
+    5: '∫ **Análisis Numérico U5: Diferenciación e Integración Numérica**\nDiferencias finitas, regla del trapecio, regla de Simpson.',
+    6: '🌀 **Análisis Numérico U6: Ecuaciones Diferenciales Ordinarias**\nMétodo de Euler, Runge-Kutta de 2° y 4° orden.',
+  },
 };
 
 function getUnidades(gid, ch) { return UNIDADES[detectarMateria(gid, ch)] || UNIDADES.iev; }
@@ -634,6 +649,7 @@ const HERRAMIENTAS = {
   informatica:'🛠️ **Herramientas Informática:**\n📗 Moodle IES11 → ies11.aulasvirtuales.name\n📂 Google Drive → drive.google.com\n🎨 Google Slides → slides.google.com\n🐙 GitHub → github.com',
   practica:   '🛠️ **Herramientas PP3 — Ciencias de Datos:**\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐍 Google Colab → colab.research.google.com\n📊 Kaggle → kaggle.com\n🤗 HuggingFace → huggingface.co\n🐙 GitHub → github.com\n📋 Trello → trello.com',
   pybd:       '🛠️ **Herramientas PyBD — Programación y BD:**\n📗 Moodle IES6 → ies6.aulasvirtuales.name\n🐘 DB Fiddle → dbfiddle.uk\n📊 draw.io → diagrams.net\n☕ IntelliJ IDEA → jetbrains.com/idea\n🌱 Spring Initializr → start.spring.io\n📦 Maven Repo → mvnrepository.com\n🐙 GitHub → github.com',
+  annum:      '🛠️ **Herramientas Análisis Numérico — UCSE:**\n🎓 Campus Virtual UCSE → elearning.ucse.edu.ar\n🐍 Python (numpy/scipy) → colab.research.google.com\n📐 Octave (gratuito, tipo MATLAB) → octave.org\n📊 GeoGebra → geogebra.org',
 };
 
 // ════════════════════════════════════════════════════════════════
@@ -1405,7 +1421,7 @@ const commands = [
       { name: 'Recuperatorio', value: 'recuperatorio' }))
     .addStringOption(o => o.setName('descripcion').setDescription('Descripción opcional').setRequired(false)),
   new SlashCommandBuilder().setName('borrar-evento').setDescription('👨‍🏫 Borrar un evento').addIntegerOption(o => o.setName('id').setDescription('ID del evento').setRequired(true)),
-  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica, practica o pybd').setRequired(true)),
+  new SlashCommandBuilder().setName('desafio').setDescription('👨‍🏫 Publicar desafio semanal').addStringOption(o => o.setName('materia').setDescription('iev, bd, informatica, practica, pybd o annum').setRequired(true)),
   new SlashCommandBuilder().setName('soluciones').setDescription('👨‍🏫 Ver soluciones del desafio'),
   new SlashCommandBuilder().setName('cerrar-desafio').setDescription('👨‍🏫 Cerrar desafio y anunciar ganador'),
   new SlashCommandBuilder().setName('similitudes').setDescription('👨‍🏫 Ver estadísticas de entregas'),
@@ -1446,6 +1462,7 @@ const commands = [
         { name: 'IEV - IES 6',              value: 'iev' },
         { name: 'PP3 - IES 6',              value: 'practica' },
         { name: 'PyBD - IES 6',             value: 'pybd' },
+        { name: 'Análisis Numérico - UCSE', value: 'annum' },
         { name: 'Todos',                    value: 'todos' }
       ))
     .addStringOption(o => o.setName('mensaje').setDescription('Texto del anuncio o consigna').setRequired(true))
@@ -2006,14 +2023,14 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       // ── DIAGNÓSTICO ──
       case 'materia': {
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const NOM = { iev:'Internet y Entornos Virtuales (IEV)', bd:'Base de Datos', informatica:'Informática', practica:'Práctica Profesionalizante III', pybd:'Programación y Base de Datos (PyBD)' };
+        const NOM = { iev:'Internet y Entornos Virtuales (IEV)', bd:'Base de Datos', informatica:'Informática', practica:'Práctica Profesionalizante III', pybd:'Programación y Base de Datos (PyBD)', annum:'Análisis Numérico' };
         await interaction.editReply(`🔍 **Detección de materia**\nCanal: **#${interaction.channel?.name}** | Servidor: **${interaction.guild?.name}**\n✅ Materia: **${NOM[mat]}**\n\nPalabras clave:\n• PyBD → \`pybd\`, \`progbd\`, \`prog-bd\`\n• PP3 → \`practica\`, \`pract\`, \`pp3\`\n• BD → \`bd\`, \`base\`, \`datos\`\n• Informática → \`info\`, \`informatica\`\n• IEV → \`iev\`, \`internet\`, \`entornos\``);
         break;
       }
 
       case 'ayuda': {
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const NOM = { iev:'📡 IEV', bd:'🗄️ BD', informatica:'💻 Informática', practica:'🎯 PP3', pybd:'☕ PyBD' };
+        const NOM = { iev:'📡 IEV', bd:'🗄️ BD', informatica:'💻 Informática', practica:'🎯 PP3', pybd:'☕ PyBD', annum:'📐 Análisis Numérico' };
         await interaction.editReply(safe(
           `📖 **Comandos — ${NOM[mat]}**\n\n` +
           `**Consultas:** /preguntar · /unidad [1-8] · /craap [url]\n` +
@@ -2668,7 +2685,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           uid = enc[0]; nombreReal = enc[1].nombreReal;
         }
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOMS = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
+        const MNOMS = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD', annum:'Análisis Numérico' };
         const matN = MNOMS[mat] || mat;
         const notaObj = { materia: matN, actividad, nota: calificacion, observacion, fecha: fechaAR(), guildId: interaction.guildId };
         if (!notas.has(uid)) notas.set(uid, []);
@@ -2759,7 +2776,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const matSel  = interaction.options.getString('materia');
         const mensaje = interaction.options.getString('mensaje');
         const dias    = interaction.options.getInteger('dias');
-        const MNOMS   = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD', todos:'Todos' };
+        const MNOMS   = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico', todos:'Todos' };
         const matNom  = MNOMS[matSel] || matSel;
 
         const fechaLimite = dias ? (() => {
@@ -2781,7 +2798,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           '_Para consultas usa /preguntar o el canal de dudas._'
         ].filter(Boolean).join('\n');
 
-        const MMAP = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD' };
+        const MMAP = { bd:'Base de Datos', informatica:'Informatica', iev:'IEV', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
 
         // Buscar en registros por materia
         let destinatarios = [...registros.entries()].filter(([uid, r]) => {
@@ -2862,7 +2879,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'asignar-materia': {
         const mat   = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOM  = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const MNOM  = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
         const matN  = MNOM[mat] || mat;
         let asignados = 0;
 
@@ -2892,7 +2909,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'exportar': {
         const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
         const matN = MNOM[mat] || mat;
         const totalCl = clasesTotales.get(interaction.guildId) || 0;
 
@@ -2922,7 +2939,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'cierre': {
         const mat  = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD' };
+        const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
         const matN = MNOM[mat] || mat;
         const totalCl = clasesTotales.get(interaction.guildId) || 0;
         if (totalCl === 0) { await interaction.editReply('Todavía no hay clases dictadas para generar el cierre.'); break; }
@@ -3161,7 +3178,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         const yaExistia   = registros.has(uid);
         const matReg = detectarMateria(interaction.guildId, interaction.channel?.name);
-        const MNOMS  = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD' };
+        const MNOMS  = { iev:'IEV', bd:'Base de Datos', informatica:'Informática', practica:'PP3', pybd:'PyBD', annum:'Análisis Numérico' };
         // Nombre viejo (apodo) con el que pudo haber marcado antes de registrarse
         const regPrevio = registros.get(uid);
         const nombreViejo = regPrevio?.nombreReal || interaction.member?.displayName || interaction.user.username;
