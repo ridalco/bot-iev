@@ -83,7 +83,8 @@ const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
 // DISCORD_TOKEN como respaldo para no dejar enlaces sin firma.
 const PRESENCIA_SECRET = process.env.PRESENCIA_SECRET || DISCORD_TOKEN;
 const PRESENCIA_URL    = process.env.PRESENCIA_URL || 'https://aulasvirtuales.name/presencia.html';
-const VENTANA_ASISTENCIA_MS = 20 * 60 * 1000;
+const VENTANA_ASISTENCIA_MS = 20 * 60 * 1000; // ventana normal — cuenta como presente, suma puntos
+const VENTANA_TARDE_MS      = 60 * 60 * 1000; // ventana de tolerancia — cuenta como "tarde", sin puntos
 const MAX_BODY_BYTES = 16 * 1024;
 
 const INSTITUTOS_GPS = {
@@ -227,10 +228,12 @@ http.createServer(async (req, res) => {
           responderJson(res, 400, { ok: false, error: 'No hay una clase activa en este momento.' });
           return;
         }
-        if (!sesion.tokenTs || Date.now() - sesion.tokenTs > VENTANA_ASISTENCIA_MS) {
-          responderJson(res, 410, { ok: false, error: 'La ventana de asistencia de 20 minutos ya cerró.' });
+        const transcurrido = sesion.tokenTs ? Date.now() - sesion.tokenTs : Infinity;
+        if (transcurrido > VENTANA_TARDE_MS) {
+          responderJson(res, 410, { ok: false, error: 'La ventana de asistencia (incluida la tolerancia por tardanza) ya cerró.' });
           return;
         }
+        const esTarde = transcurrido > VENTANA_ASISTENCIA_MS;
 
         const guildObj = client.guilds.cache.get(guildId);
         if (!guildObj) {
@@ -269,7 +272,7 @@ http.createServer(async (req, res) => {
         const nombreReal = getNombreReal(uid, miembro.displayName || miembro.user.username);
         const hora = horaAR();
         const distancia = Math.round(distanciaReal);
-        sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia, precision: Math.round(precision) });
+        sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia, precision: Math.round(precision), tarde: esTarde });
 
         // Se responde primero para que la página no quede esperando.
         responderJson(res, 200, {
@@ -279,13 +282,14 @@ http.createServer(async (req, res) => {
           distancia,
           precision: Math.round(precision),
           instituto: instituto.nombre,
-          mensaje: 'Presencia registrada automáticamente.'
+          tarde: esTarde,
+          mensaje: esTarde ? 'Presencia registrada como llegada tarde (no suma puntos).' : 'Presencia registrada automáticamente.'
         });
 
         try {
           const mat = detectarMateria(guildId, sesion.canalNombre || '');
           await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '');
-          const p = darPuntos(uid, nombreReal, 'asistencia');
+          const p = darPuntos(uid, nombreReal, esTarde ? 'asistencia_tarde' : 'asistencia');
           const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
           if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: miembro.user.username, materia: MNOM[mat] || mat, guildId, registradoEn: ahoraAR() });
           else if (!registros.get(uid).materia) {
@@ -307,18 +311,20 @@ http.createServer(async (req, res) => {
             { name: '📍 Ubicación', value: `${distancia} m del instituto (±${Math.round(precision)} m)`, inline: true },
             { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
           ];
-          if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
+          if (!esTarde && prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
           if (logroMsg) campos.push({ name: '🏅 ¡Nuevo logro!', value: logroMsg, inline: false });
 
           await miembro.send({ embeds: [{
-            title: `${getRol(p.pts).emoji} Presencia registrada`,
-            color: colorRol(p.pts),
-            description: `**${sesion.titulo}**\n+10 pts → **${p.pts} pts** totales`,
+            title: esTarde ? '🟡 Llegada tarde registrada' : `${getRol(p.pts).emoji} Presencia registrada`,
+            color: esTarde ? 0xf59e0b : colorRol(p.pts),
+            description: esTarde
+              ? `**${sesion.titulo}**\nLlegaste después de los primeros 20 minutos — cuenta como presente, pero **no suma puntos**.`
+              : `**${sesion.titulo}**\n+10 pts → **${p.pts} pts** totales`,
             fields: campos,
           }] }).catch(() => {});
 
-          if (canalObj) await canalObj.send(`✅ **${nombreReal}** registró su presencia · 🕐 ${hora} · 📍 ${distancia} m`).catch(() => {});
-          LOG.info(`Presencia GPS segura: ${nombreReal}, ${distancia}m, precisión ±${Math.round(precision)}m`);
+          if (canalObj) await canalObj.send(`${esTarde ? '🟡' : '✅'} **${nombreReal}** registró su presencia${esTarde ? ' (tarde)' : ''} · 🕐 ${hora} · 📍 ${distancia} m`).catch(() => {});
+          LOG.info(`Presencia GPS segura: ${nombreReal}, ${distancia}m, precisión ±${Math.round(precision)}m${esTarde ? ' [TARDE]' : ''}`);
         } catch (e) {
           LOG.error('La presencia se registró, pero falló una tarea posterior', e);
         }
@@ -679,9 +685,9 @@ function darPuntos(userId, nombre, tipo) {
   if (!p.logros)      p.logros  = [];
   if (!p.streak)      p.streak  = 0;
   if (!p.ultimaClase) p.ultimaClase = '';
-  const delta = { asistencia: 10, entrega: 20, pregunta: 5, quiz: 15, desafio: 40 }[tipo] || 0;
+  const delta = { asistencia: 10, asistencia_tarde: 0, entrega: 20, pregunta: 5, quiz: 15, desafio: 40 }[tipo] || 0;
   p.pts += delta;
-  if (tipo === 'asistencia') {
+  if (tipo === 'asistencia' || tipo === 'asistencia_tarde') {
     p.asistencias++;
     const hoy = fechaAR();
     // Streak: si la última clase fue ayer o hoy (en la misma clase) mantiene racha
@@ -1406,11 +1412,11 @@ async function iniciarClase(channel, titulo, guildId) {
     } catch (e) { LOG.warn('No se pudo enviar DM con código al profesor: ' + e.message); }
   }
 
-  // Auto-cerrar link a los 20 minutos
+  // Aviso a los 20 minutos: la ventana normal cerró, pero sigue la tolerancia por tardanza
   setTimeout(async () => {
     const sesActual = getSesion(guildId);
     if (sesActual.activa && sesActual.tokenTs === s.tokenTs) {
-      await channel.send('⏰ **El link de asistencia expiró.** El profesor puede usar `/cerrar-clase` para ver el resumen.').catch(()=>{});
+      await channel.send('⏰ **Pasaron los primeros 20 minutos.** Quien llegue de acá en adelante (hasta la hora) puede marcar presencia igual, pero cuenta como **llegada tarde** — no suma puntos.').catch(()=>{});
     }
   }, VENTANA_ASISTENCIA_MS);
 
@@ -1598,7 +1604,7 @@ client.once(Events.ClientReady, async (c) => {
   setInterval(guardarDatos, 5 * 60 * 1000);
   // Limpiar formularios expirados cada 5 minutos
   setInterval(limpiarFormularios, 5 * 60 * 1000);
-  // Cerrar la VENTANA DE ASISTENCIA pasados 20 min — revisa cada minuto
+  // Cerrar la VENTANA DE ASISTENCIA pasada la hora completa (20 min normal + 40 min de tolerancia por tardanza) — revisa cada minuto
   // (la clase sigue, pero ya nadie puede marcar presencia)
   setInterval(async () => {
     let cambios = false;
@@ -1608,24 +1614,25 @@ client.once(Events.ClientReady, async (c) => {
 
       const transcurrido = Date.now() - s.tokenTs;
 
-      // Pasados 20 min, cerrar la ventana de asistencia automáticamente
-      if (transcurrido > VENTANA_ASISTENCIA_MS) {
+      // Pasada la hora completa, cerrar la ventana de asistencia automáticamente
+      if (transcurrido > VENTANA_TARDE_MS) {
         s.activa = false;
-        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps' }));
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde }));
         s.fechaUltimaClase = s.fecha;
         clasesTotales.set(gid, (clasesTotales.get(gid) || 0) + 1);
         cambios = true;
+        const cantTarde = [...s.asistentes.values()].filter(a => a.tarde).length;
         // Avisar al profesor y publicar resumen en el canal
         if (PROFESOR_ID) {
           try {
             const prof = await client.users.fetch(PROFESOR_ID);
-            await prof.send('🔔 La asistencia de **' + (s.titulo||'Clase') + '** se cerró (pasaron los 20 min).\n👥 ' + s.asistentes.size + ' presentes registrados.\nUsá /alumnos para ver la lista.');
+            await prof.send('🔔 La asistencia de **' + (s.titulo||'Clase') + '** se cerró (pasó la hora, incluida la tolerancia por tardanza).\n👥 ' + s.asistentes.size + ' presentes registrados' + (cantTarde ? ` (${cantTarde} llegaron tarde)` : '') + '.\nUsá /alumnos para ver la lista.');
           } catch {}
         }
         try {
           if (s.canalId) {
             const canalObj = await client.channels.fetch(s.canalId).catch(() => null);
-            if (canalObj) await canalObj.send('⏰ **Asistencia cerrada** — ' + (s.titulo||'Clase') + '\n👥 ' + s.asistentes.size + ' presentes. La ventana de 20 minutos finalizó.');
+            if (canalObj) await canalObj.send('⏰ **Asistencia cerrada** — ' + (s.titulo||'Clase') + '\n👥 ' + s.asistentes.size + ' presentes. La ventana de asistencia (incluida la tolerancia por tardanza) finalizó.');
           }
         } catch {}
       }
@@ -1962,7 +1969,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
     if (sesion.asistentes.has(uid)) { await interaction.reply({ content: nombre + ', ya marcaste presente.', ephemeral: true }); return; }
 
     // Link individual, firmado y con vencimiento. El servidor ignora nombre y distancia enviados por el navegador.
-    const exp = Math.min(Date.now() + VENTANA_ASISTENCIA_MS, (sesion.tokenTs || Date.now()) + VENTANA_ASISTENCIA_MS);
+    // Vence al cierre de la ventana de tolerancia por tardanza (60 min desde que arrancó la clase),
+    // no a los 20 min — así un alumno que llega tarde igual puede generar un link válido.
+    const exp = Math.min(Date.now() + VENTANA_TARDE_MS, (sesion.tokenTs || Date.now()) + VENTANA_TARDE_MS);
     const nonce = crypto.randomBytes(12).toString('hex');
     const sig = firmarPresencia({ uid, guildId: interaction.guildId, exp, nonce });
     const qp = new URLSearchParams({
@@ -2098,15 +2107,16 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         clasesTotales.set(guildId, (clasesTotales.get(guildId) || 0) + 1);
 
         // Guardar presentes de hoy en sesión para /alumnos post-clase
-        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps' }));
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde }));
         s.fechaUltimaClase = s.fecha;
         const totalClases = clasesTotales.get(guildId);
         guardarDatos();
 
         const lista   = [...s.asistentes.values()];
-        const metodoStr = a => a.metodo === 'codigo' ? ' 🔑' : a.metodo === 'gps' ? ` 📍${a.distancia ? ' '+a.distancia+'m' : ''}` : '';
-        const resumen = lista.length ? lista.map((a,i) => `${i+1}. **${a.nombre}** — ${a.hora}${metodoStr(a)}`).join('\n') : 'Sin presentes.';
-        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes** · Clase #${totalClases} del cuatrimestre\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n⏳ Generando resumen con IA...`));
+        const metodoStr = a => (a.metodo === 'codigo' ? ' 🔑' : a.metodo === 'gps' ? ` 📍${a.distancia ? ' '+a.distancia+'m' : ''}` : '') + (a.tarde ? ' 🟡 tarde' : '');
+        const cantTarde = lista.filter(a => a.tarde).length;
+        const resumen = lista.length ? lista.map((a,i) => `${i+1}. ${a.tarde?'🟡':'✅'} **${a.nombre}** — ${a.hora}${metodoStr(a)}`).join('\n') : 'Sin presentes.';
+        await interaction.editReply(safe(`📋 **Clase cerrada — ${s.fecha}**\n👥 **${lista.length} presentes**${cantTarde ? ` (${cantTarde} tarde 🟡)` : ''} · Clase #${totalClases} del cuatrimestre\n\n${resumen}\n\n📊 Guardado en Google Sheets.\n⏳ Generando resumen con IA...`));
 
         // DM a alumnos ausentes — solo del mismo servidor y que hayan asistido antes
         const presentesIds = new Set(s.asistentes.keys());
@@ -2509,11 +2519,13 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'codigo': {
         const sesion  = getSesion(interaction.guildId);
         if (!sesion.activa) { await interaction.editReply('No hay ninguna clase activa en este momento.'); break; }
-        if (sesion.tokenTs && (Date.now() - sesion.tokenTs) > VENTANA_ASISTENCIA_MS) {
+        const transcurrido = sesion.tokenTs ? Date.now() - sesion.tokenTs : Infinity;
+        if (transcurrido > VENTANA_TARDE_MS) {
           sesion.activa = false;
-          await interaction.editReply('La ventana de asistencia (20 min) ya cerró. Avisale al profesor si llegaste tarde.');
+          await interaction.editReply('La ventana de asistencia (incluida la tolerancia por tardanza) ya cerró. Avisale al profesor si llegaste tarde.');
           break;
         }
+        const esTarde = transcurrido > VENTANA_ASISTENCIA_MS;
         const uid     = interaction.user.id;
         const nombre  = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
         if (sesion.asistentes.has(uid)) { await interaction.editReply(`${nombre}, ya marcaste presente.`); break; }
@@ -2524,13 +2536,13 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         }
         // Código correcto — registrar presencia
         const hora = horaAR();
-        sesion.asistentes.set(uid, { nombre, hora, metodo: 'codigo' });
+        sesion.asistentes.set(uid, { nombre, hora, metodo: 'codigo', tarde: esTarde });
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
         await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
         // Guardar materia en el perfil del alumno
         if (!registros.has(uid)) registros.set(uid, { nombreReal: nombre, discordUser: interaction.user.username, materia: mat, guildId: interaction.guildId, registradoEn: ahoraAR() });
         else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
-        const p   = darPuntos(uid, nombre, 'asistencia');
+        const p   = darPuntos(uid, nombre, esTarde ? 'asistencia_tarde' : 'asistencia');
         const rol = getRol(p.pts);
         await actualizarRol(interaction.member, p.pts, interaction.channel);
         const nuevosLogros = verificarLogros(uid, nombre, p, interaction.channel?.name);
@@ -2541,12 +2553,12 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           { name: '🔥 Racha', value: `${p.streak || 0} clases`, inline: true },
           { name: '📍 Ubicación', value: 'Sin verificar — código del pizarrón', inline: true },
         ];
-        if (prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
+        if (!esTarde && prog) campos.push({ name: `Próximo nivel — faltan ${prog.faltan} pts`, value: `\`${barraProgreso(prog.pct)}\` ${prog.pct}%`, inline: false });
         if (logroTxt) campos.push({ name: '🏅 ¡Nuevo logro!', value: logroTxt, inline: false });
         await interaction.editReply({ embeds: [{
-          title: `${rol.emoji} ${nombre} — presencia registrada`,
-          color: colorRol(p.pts),
-          description: `+10 pts → **${p.pts} pts** totales`,
+          title: esTarde ? `🟡 ${nombre} — llegada tarde registrada` : `${rol.emoji} ${nombre} — presencia registrada`,
+          color: esTarde ? 0xf59e0b : colorRol(p.pts),
+          description: esTarde ? 'Cuenta como presente, pero **no suma puntos** por llegar después de los primeros 20 minutos.' : `+10 pts → **${p.pts} pts** totales`,
           fields: campos,
         }] });
         break;
@@ -2571,7 +2583,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
               `Así cada enlace queda asociado y firmado para la cuenta correcta.
 
 ` +
-              `⏳ Vigencia restante: **${Math.max(0, Math.ceil((VENTANA_ASISTENCIA_MS - (Date.now() - s.tokenTs)) / 60000))} minutos**`,
+              `⏳ Vigencia con puntos: **${Math.max(0, Math.ceil((VENTANA_ASISTENCIA_MS - (Date.now() - s.tokenTs)) / 60000))} minutos** · Vigencia total (con tolerancia por tardanza, sin puntos): **${Math.max(0, Math.ceil((VENTANA_TARDE_MS - (Date.now() - s.tokenTs)) / 60000))} minutos**`,
             color: 0x2563eb,
             image: { url: qrUrl },
             footer: { text: `Mentor 🎓 · ${interaction.guild?.name || ''}` }
@@ -3286,7 +3298,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
         if (tieneActiva || tieneUltima) {
           const presentes = tieneActiva
-            ? [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora }))
+            ? [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, tarde: !!a.tarde }))
             : s.presentesUltimaClase;
           const tituloC = s.fechaUltimaClase || s.fecha || 'Última clase';
           const lineas = presentes.map((a, i) => {
@@ -3295,9 +3307,12 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
             const nAl     = notas.get(a.uid) || [];
             const nProm   = nAl.length ? (Math.round(nAl.reduce((sum,n) => sum+n.nota,0)/nAl.length*10)/10)+'/10' : 'sin notas';
             const discord = reg?.discordUser || p?.nombre || a.uid;
-            return (i+1) + '. **' + a.nombre + '** (@' + discord + ') — Notas: ' + nProm + ' · Pts: ' + (p?.pts||0);
+            const icono   = a.tarde ? '🟡' : '✅';
+            const etiq    = a.tarde ? ' (tarde)' : '';
+            return (i+1) + '. ' + icono + ' **' + a.nombre + '**' + etiq + ' (@' + discord + ') — Notas: ' + nProm + ' · Pts: ' + (p?.pts||0);
           });
-          const msg = '👥 **Clase ' + tituloC + '** — ' + presentes.length + ' presentes\nUsá el @apodo para /nota\n\n' + lineas.join('\n');
+          const cantTarde = presentes.filter(a => a.tarde).length;
+          const msg = '👥 **Clase ' + tituloC + '** — ' + presentes.length + ' presentes' + (cantTarde ? ' (' + cantTarde + ' tarde 🟡)' : '') + '\nUsá el @apodo para /nota\n\n' + lineas.join('\n');
           await enviarLargo(interaction, msg);
         } else {
           // Sin clase reciente — todos los del servidor
