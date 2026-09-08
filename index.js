@@ -272,7 +272,7 @@ http.createServer(async (req, res) => {
         const nombreReal = getNombreReal(uid, miembro.displayName || miembro.user.username);
         const hora = horaAR();
         const distancia = Math.round(distanciaReal);
-        sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia, precision: Math.round(precision), tarde: esTarde });
+        sesion.asistentes.set(uid, { nombre: nombreReal, hora, metodo: 'gps', distancia, precision: Math.round(precision), tarde: esTarde, lat, lng });
 
         // Se responde primero para que la página no quede esperando.
         responderJson(res, 200, {
@@ -288,7 +288,7 @@ http.createServer(async (req, res) => {
 
         try {
           const mat = detectarMateria(guildId, sesion.canalNombre || '');
-          await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '');
+          await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '', { lat, lng, distancia, precision: Math.round(precision), tarde: esTarde });
           const p = darPuntos(uid, nombreReal, esTarde ? 'asistencia_tarde' : 'asistencia');
           const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
           if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: miembro.user.username, materia: MNOM[mat] || mat, guildId, registradoEn: ahoraAR() });
@@ -541,7 +541,7 @@ const SOLO_PROFESOR = new Set([
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
   'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
   'nota','notas-alumno','boletin-notas','anuncio','asignar-materia','exportar','cierre',
-  'asistencia-general','ajustar-asistencia'
+  'asistencia-general','ajustar-asistencia','ver-ubicacion'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -1213,13 +1213,14 @@ async function actualizarNombreSheets(nombreViejo, nombreNuevo, fecha) {
   } catch (e) { LOG.error('Error actualizando nombre en Sheets', e); return 0; }
 }
 
-async function guardarAsistencia(nombre, fecha, hora, materia, servidor) {
+async function guardarAsistencia(nombre, fecha, hora, materia, servidor, extra = {}) {
+  const { lat = '', lng = '', distancia = '', precision = '', tarde = false } = extra;
   for (let intento = 1; intento <= 3; intento++) {
     try {
       const sheets = await getSheets();
       await sheets.spreadsheets.values.append({
-        spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F', valueInputOption: 'USER_ENTERED',
-        resource: { values: [[fecha, hora, nombre, 'Presente', materia || '', servidor || '']] }
+        spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:K', valueInputOption: 'USER_ENTERED',
+        resource: { values: [[fecha, hora, nombre, tarde ? 'Tarde' : 'Presente', materia || '', servidor || '', lat, lng, distancia, precision, tarde ? 'Sí' : 'No']] }
       });
       return true; // éxito
     } catch (e) {
@@ -1511,6 +1512,9 @@ const commands = [
     .addStringOption(o => o.setName('carrera').setDescription('Tu carrera (ej: Tecnicatura en Desarrollo de Software)').setRequired(false)),
   new SlashCommandBuilder().setName('misregistro').setDescription('Ver tu registro actual'),
   new SlashCommandBuilder().setName('alumnos').setDescription('👨‍🏫 Ver listado de alumnos registrados (profesor)'),
+  new SlashCommandBuilder().setName('ver-ubicacion')
+    .setDescription('👨‍🏫 Ver dónde marcó presencia un alumno (GPS), con link al mapa')
+    .addUserOption(o => o.setName('alumno').setDescription('Alumno a consultar').setRequired(true)),
   new SlashCommandBuilder().setName('ayuda').setDescription('Ver todos los comandos disponibles'),
   new SlashCommandBuilder().setName('mislogros').setDescription('Ver tus logros desbloqueados'),
   new SlashCommandBuilder().setName('historial').setDescription('Ver historial de entregas de un alumno')
@@ -1617,7 +1621,7 @@ client.once(Events.ClientReady, async (c) => {
       // Pasada la hora completa, cerrar la ventana de asistencia automáticamente
       if (transcurrido > VENTANA_TARDE_MS) {
         s.activa = false;
-        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde }));
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde, lat: a.lat, lng: a.lng, distancia: a.distancia, precision: a.precision }));
         s.fechaUltimaClase = s.fecha;
         clasesTotales.set(gid, (clasesTotales.get(gid) || 0) + 1);
         cambios = true;
@@ -2107,7 +2111,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         clasesTotales.set(guildId, (clasesTotales.get(guildId) || 0) + 1);
 
         // Guardar presentes de hoy en sesión para /alumnos post-clase
-        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde }));
+        s.presentesUltimaClase = [...s.asistentes.entries()].map(([uid, a]) => ({ uid, nombre: a.nombre, hora: a.hora, metodo: a.metodo||'gps', tarde: !!a.tarde, lat: a.lat, lng: a.lng, distancia: a.distancia, precision: a.precision }));
         s.fechaUltimaClase = s.fecha;
         const totalClases = clasesTotales.get(guildId);
         guardarDatos();
@@ -2538,7 +2542,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         const hora = horaAR();
         sesion.asistentes.set(uid, { nombre, hora, metodo: 'codigo', tarde: esTarde });
         const mat = detectarMateria(interaction.guildId, interaction.channel?.name);
-        await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '');
+        await guardarAsistencia(nombre, sesion.fecha, hora, mat, interaction.guild?.name || '', { tarde: esTarde });
         // Guardar materia en el perfil del alumno
         if (!registros.has(uid)) registros.set(uid, { nombreReal: nombre, discordUser: interaction.user.username, materia: mat, guildId: interaction.guildId, registradoEn: ahoraAR() });
         else if (!registros.get(uid).materia) { const r = registros.get(uid); r.materia = mat; r.guildId = interaction.guildId; registros.set(uid, r); }
@@ -3329,6 +3333,43 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
           const msg = '👥 **Todos los alumnos (' + todos.length + ')**\nIniciá una clase para ver solo los de hoy\n\n' + lineas.join('\n');
           await enviarLargo(interaction, msg);
         }
+        break;
+      }
+
+      case 'ver-ubicacion': {
+        const alumnoObj = interaction.options.getUser('alumno');
+        const uid = alumnoObj.id;
+        const nombre = getNombreReal(uid, alumnoObj.username);
+        const s = getSesion(interaction.guildId);
+
+        // Buscar primero en la clase activa, si no en la última cerrada
+        let registro = s.activa && s.asistentes.has(uid) ? s.asistentes.get(uid) : null;
+        let fechaReg = s.fecha;
+        if (!registro && s.presentesUltimaClase) {
+          registro = s.presentesUltimaClase.find(a => a.uid === uid);
+          fechaReg = s.fechaUltimaClase;
+        }
+
+        if (!registro) { await interaction.editReply(`${nombre} no tiene ninguna presencia registrada en la clase actual o la última cerrada.`); break; }
+        if (registro.metodo !== 'gps' || !Number.isFinite(registro.lat) || !Number.isFinite(registro.lng)) {
+          await interaction.editReply(`${nombre} marcó presencia con **${registro.metodo === 'codigo' ? 'código del pizarrón' : 'un método sin GPS'}** — no hay ubicación guardada para ese registro.`);
+          break;
+        }
+
+        const mapsUrl = `https://www.google.com/maps?q=${registro.lat},${registro.lng}`;
+        await interaction.editReply({ embeds: [{
+          title: `📍 Ubicación de ${nombre}`,
+          color: 0x2563eb,
+          description: `**${fechaReg}** · ${registro.hora}${registro.tarde ? ' 🟡 (tarde)' : ''}`,
+          fields: [
+            { name: 'Distancia al instituto', value: `${registro.distancia ?? '—'} m`, inline: true },
+            { name: 'Precisión del GPS', value: `±${registro.precision ?? '—'} m`, inline: true },
+            { name: 'Coordenadas', value: `\`${registro.lat.toFixed(6)}, ${registro.lng.toFixed(6)}\``, inline: false },
+          ],
+        }],
+        components: [new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setLabel('Ver en Google Maps').setEmoji('🗺️').setStyle(ButtonStyle.Link).setURL(mapsUrl)
+        )] });
         break;
       }
     }
