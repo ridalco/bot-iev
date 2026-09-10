@@ -1306,7 +1306,7 @@ function fmtEventos(lista) {
 // ════════════════════════════════════════════════════════════════
 async function publicarNoticias(guild) {
   const canal = guild.channels.cache.find(c => c.name === CANAL_NOTICIAS);
-  if (!canal) return;
+  if (!canal) return { guild: guild.name, ok: false, motivo: `No existe un canal #${CANAL_NOTICIAS} en este servidor (revisá que el nombre sea exacto).` };
   // Reintentar hasta 2 veces si la API falla (Premature close, 404 temporal)
   for (let intento = 1; intento <= 2; intento++) {
     try {
@@ -1317,10 +1317,11 @@ async function publicarNoticias(guild) {
         }]
       });
       await canal.send(safe(`📰 **NOTICIAS TECH — ${fechaAR()}**\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n${r.content[0].text}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n*Mentor 🎓*`));
-      return; // éxito
+      return { guild: guild.name, ok: true };
     } catch (e) {
-      LOG.error(`Error publicando noticias (intento ${intento}/2)`, e);
+      LOG.error(`Error publicando noticias en ${guild.name} (intento ${intento}/2)`, e);
       if (intento < 2) await new Promise(r => setTimeout(r, 2000));
+      else return { guild: guild.name, ok: false, motivo: `Falló la IA o el envío: ${e?.message || e}` };
     }
   }
 }
@@ -1715,8 +1716,20 @@ client.once(Events.ClientReady, async (c) => {
     // Si querés reactivarla editá HORARIOS_CLASE arriba
 
     // Noticias automáticas 8:00 AM
-    if (hora === 8 && min === 0)
-      for (const g of client.guilds.cache.values()) await publicarNoticias(g);
+    if (hora === 8 && min === 0) {
+      const resultados = [];
+      for (const g of client.guilds.cache.values()) resultados.push(await publicarNoticias(g));
+      if (PROFESOR_ID && resultados.length) {
+        const lineas = resultados.map(r => r.ok ? `✅ ${r.guild}` : `❌ ${r.guild} — ${r.motivo}`).join('\n');
+        const huboFallas = resultados.some(r => !r.ok);
+        if (huboFallas) {
+          try {
+            const prof = await client.users.fetch(PROFESOR_ID);
+            await prof.send(`📰 **Resumen de noticias tech — ${fechaAR()}**\n\n${lineas}`);
+          } catch {}
+        }
+      }
+    }
 
     // Alumnos en riesgo — lunes 8:30hs
     if (dia === 1 && hora === 8 && min === 30) {
@@ -2183,7 +2196,9 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
       case 'noticias':
         await interaction.editReply('Generando noticias, ya vuelvo...');
-        publicarNoticias(interaction.guild).then(()=>interaction.editReply('📰 ¡Publicadas en #noticias-tech!')).catch(()=>interaction.editReply('❌ Error.'));
+        publicarNoticias(interaction.guild)
+          .then(r => interaction.editReply(r.ok ? '📰 ¡Publicadas en #noticias-tech!' : `❌ No se pudo: ${r.motivo}`))
+          .catch(e => interaction.editReply(`❌ Error inesperado: ${e?.message || e}`));
         break;
 
       case 'corregir': {
