@@ -9,6 +9,8 @@ require('dotenv').config();
 const fs     = require('fs');
 const http   = require('http');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
+const als = new AsyncLocalStorage(); // contexto por servidor (guildId) para los puntos
 const {
   Client, GatewayIntentBits, Events,
   SlashCommandBuilder, REST, Routes,
@@ -289,6 +291,7 @@ http.createServer(async (req, res) => {
         try {
           const mat = detectarMateria(guildId, sesion.canalNombre || '');
           await guardarAsistencia(nombreReal, sesion.fecha, hora, mat, guildObj.name || '', { lat, lng, distancia, precision: Math.round(precision), tarde: esTarde });
+          als.enterWith({ gid: guildId });
           const p = darPuntos(uid, nombreReal, esTarde ? 'asistencia_tarde' : 'asistencia');
           const MNOM = { iev:'IEV', bd:'Base de Datos', informatica:'Informatica', practica:'PP3', pybd:'PyBD', annum:'Analisis Numerico' };
           if (!registros.has(uid)) registros.set(uid, { nombreReal, discordUser: miembro.user.username, materia: MNOM[mat] || mat, guildId, registradoEn: ahoraAR() });
@@ -372,7 +375,38 @@ http.createServer(async (req, res) => {
 // Sin disco, se recarga vacío al reiniciar — comportamiento esperado
 // ════════════════════════════════════════════════════════════════
 const DATA_FILE   = '/var/data/data.json'; // disco persistente Render
-const puntos      = new Map(); // userId  → { nombre, pts, entregas, asistencias, preguntas }
+// Puntos POR SERVIDOR. Misma interfaz que un Map (get/set/has/entries/size), pero cada llamada usa el
+// servidor del contexto actual (als). Clave guardada: "guildId:userId". Las claves viejas (solo userId)
+// son los puntos históricos: se conservan y se asignan al servidor del alumno (registro) o al primero donde actúe.
+class PuntosStore {
+  constructor() { this.raw = new Map(); }
+  gid() { return als.getStore()?.gid || null; }
+  _reclamar(uid, g) {
+    const leg = this.raw.get(uid);
+    if (!leg || leg.migradoA) return undefined;
+    const regG = registros.get(uid)?.guildId;
+    if (regG && regG !== g) return undefined; // sus puntos viejos pertenecen al servidor donde se registró
+    const copia = JSON.parse(JSON.stringify(leg)); delete copia.migradoA;
+    this.raw.set(`${g}:${uid}`, copia);
+    leg.migradoA = g; // el original queda como respaldo, nunca se borra
+    return copia;
+  }
+  get(uid) { const g = this.gid(); if (!g) return this.raw.get(uid); return this.raw.get(`${g}:${uid}`) || this._reclamar(uid, g); }
+  has(uid) { return !!this.get(uid); }
+  set(uid, v) { const g = this.gid(); this.raw.set(g ? `${g}:${uid}` : uid, v); return this; }
+  entries() {
+    const g = this.gid();
+    if (!g) return [...this.raw.entries()].filter(([k]) => !k.includes(':'));
+    for (const [k, v] of [...this.raw.entries()]) if (!k.includes(':') && !v.migradoA && registros.get(k)?.guildId === g) this._reclamar(k, g);
+    const pre = g + ':';
+    return [...this.raw.entries()].filter(([k]) => k.startsWith(pre)).map(([k, v]) => [k.slice(pre.length), v]);
+  }
+  get size() { return this.entries().length; }
+  rawLoad(k, v) { this.raw.set(k, v); }
+  toObject() { return Object.fromEntries(this.raw); }
+  todos() { return [...this.raw.entries()].filter(([k]) => k.includes(':')).map(([k, v]) => { const i = k.indexOf(':'); return { gid: k.slice(0, i), uid: k.slice(i + 1), p: v }; }); }
+}
+const puntos      = new PuntosStore(); // por servidor — userId → { nombre, pts, entregas, asistencias, preguntas }
 const registros   = new Map(); // userId  → { nombreReal, dni, carrera, registradoEn }
 const tareas      = new Map(); // id      → { titulo, descripcion, fecha, canal, completados: Set }
 const eventos     = new Map(); // id      → { titulo, fecha, tipo, descripcion, avisados }
@@ -399,7 +433,7 @@ function cargarDatos() {
       if (raw) { ESTADO_CARGA = 'backup'; LOG.warn('data.json dañado: se restauró desde data.json.bak'); }
       else { ESTADO_CARGA = 'corrupto'; LOG.error('data.json dañado y sin backup válido. Arrancando vacío (copia del dañado conservada).'); return; }
     }
-    if (raw.puntos)  for (const [k, v] of Object.entries(raw.puntos))  puntos.set(k, v);
+    if (raw.puntos)  for (const [k, v] of Object.entries(raw.puntos))  puntos.rawLoad(k, v);
     if (raw.eventos) for (const [k, v] of Object.entries(raw.eventos)) eventos.set(parseInt(k), v);
     if (raw.tareas)  for (const [k, v] of Object.entries(raw.tareas))
       tareas.set(parseInt(k), { ...v, completados: new Set(v.completados || []) });
@@ -434,7 +468,7 @@ function cargarDatos() {
       }
       LOG.info('Sesiones restauradas desde disco.');
     }
-    LOG.info(`Datos cargados: ${puntos.size} alumnos, ${tareas.size} tareas, ${eventos.size} eventos`);
+    LOG.info(`Datos cargados: ${puntos.raw.size} registros de puntos, ${tareas.size} tareas, ${eventos.size} eventos`);
   } catch (e) { LOG.error('Error cargando datos', e); }
 }
 
@@ -446,7 +480,7 @@ function guardarDatos() {
     try {
       const contenido = JSON.stringify({
         formularios:  Object.fromEntries(formularioActivo),
-        puntos:       Object.fromEntries(puntos),
+        puntos:       puntos.toObject(),
         registros:    Object.fromEntries(registros),
         clasesTotales: Object.fromEntries(clasesTotales),
         notas:         Object.fromEntries(notas),
@@ -1254,27 +1288,36 @@ function getNombreReal(userId, fallback) {
   return reg ? reg.nombreReal : fallback;
 }
 
-async function actualizarNombreSheets(nombreViejo, nombreNuevo, fecha) {
-  // Reemplaza el nombre en las filas de asistencia de HOY (columna C)
+async function actualizarNombreSheets(nombresViejos, nombreNuevo, servidor) {
+  // Reemplaza el nombre en TODAS las filas históricas de ese alumno (Asistencia col C, Notas col B),
+  // limitando al servidor del alumno para no tocar homónimos de otros cursos.
+  const viejos = new Set([].concat(nombresViejos).filter(n => n && n !== nombreNuevo));
+  if (!viejos.size) return 0;
+  let total = 0;
   try {
     const sheets = await getSheets();
-    const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: 'Asistencia!A:F' });
-    const filas = resp.data.values || [];
-    const updates = [];
-    for (let i = 0; i < filas.length; i++) {
-      // fila: [fecha, hora, nombre, estado, materia, servidor]
-      if (filas[i][0] === fecha && filas[i][2] === nombreViejo) {
-        updates.push({ range: `Asistencia!C${i+1}`, values: [[nombreNuevo]] });
-      }
+    const tareas_ = [
+      { hoja: 'Asistencia', rango: 'Asistencia!A:F', colNombre: 2, letra: 'C', colServ: 5 },
+      { hoja: 'Notas',      rango: 'Notas!A:G',      colNombre: 1, letra: 'B', colServ: 6 },
+    ];
+    for (const t of tareas_) {
+      try {
+        const resp = await sheets.spreadsheets.values.get({ spreadsheetId: SPREADSHEET_ID, range: t.rango });
+        const filas = resp.data.values || [];
+        const updates = [];
+        for (let i = 1; i < filas.length; i++) {
+          if (!viejos.has(filas[i][t.colNombre])) continue;
+          if (servidor && filas[i][t.colServ] && filas[i][t.colServ] !== servidor) continue;
+          updates.push({ range: `${t.hoja}!${t.letra}${i+1}`, values: [[nombreNuevo]] });
+        }
+        if (updates.length) {
+          await sheets.spreadsheets.values.batchUpdate({ spreadsheetId: SPREADSHEET_ID, resource: { valueInputOption: 'USER_ENTERED', data: updates } });
+          total += updates.length;
+        }
+      } catch (e) { LOG.error(`Error actualizando nombre en ${t.hoja}`, e); }
     }
-    if (updates.length) {
-      await sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: SPREADSHEET_ID,
-        resource: { valueInputOption: 'USER_ENTERED', data: updates }
-      });
-    }
-    return updates.length;
-  } catch (e) { LOG.error('Error actualizando nombre en Sheets', e); return 0; }
+    return total;
+  } catch (e) { LOG.error('Error actualizando nombre en Sheets', e); return total; }
 }
 
 async function guardarAsistencia(nombre, fecha, hora, materia, servidor, extra = {}) {
@@ -1308,12 +1351,12 @@ async function guardarNotaSheets(nombreAlumno, materia, actividad, nota, observa
 async function backupPuntos() {
   try {
     const sheets = await getSheets();
-    const filas  = [...puntos.entries()].map(([id, p]) => [id, p.nombre, p.pts, p.asistencias, p.entregas, p.preguntas, fechaAR()]);
-    await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A:G' });
+    const filas  = puntos.todos().map(({ gid, uid, p }) => [uid, p.nombre, p.pts, p.asistencias, p.entregas, p.preguntas, fechaAR(), client.guilds.cache.get(gid)?.name || gid]);
+    await sheets.spreadsheets.values.clear({ spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A:H' });
     if (filas.length)
       await sheets.spreadsheets.values.update({
         spreadsheetId: SPREADSHEET_ID, range: 'Puntos!A1', valueInputOption: 'USER_ENTERED',
-        resource: { values: [['userId','Nombre','Puntos','Asistencias','Entregas','Preguntas','Actualizado'], ...filas] }
+        resource: { values: [['userId','Nombre','Puntos','Asistencias','Entregas','Preguntas','Actualizado','Servidor'], ...filas] }
       });
     LOG.info(`Backup Sheets completado: ${filas.length} alumnos`);
   } catch (e) { LOG.error('Error en backup Sheets', e); }
@@ -1642,6 +1685,14 @@ client.on(Events.ShardDisconnect, (event, id) => LOG.warn(`Shard ${id} se descon
 // ════════════════════════════════════════════════════════════════
 // EVENTO: BOT LISTO
 // ════════════════════════════════════════════════════════════════
+// Ejecuta cada evento dentro del contexto de su servidor (para que los puntos sean por servidor)
+function onCtx(evento, getGid, handler) {
+  client.on(evento, (...args) => {
+    let g = null; try { g = getGid(...args) || null; } catch {}
+    return als.run({ gid: g }, () => handler(...args));
+  });
+}
+
 client.once(Events.ClientReady, async (c) => {
   LOG.info(`Mentor conectado como ${c.user.tag}`);
   LOG.info(`Hora Argentina: ${ahoraAR()}`);
@@ -1850,7 +1901,7 @@ client.on(Events.GuildCreate, async (guild) => {
 // ════════════════════════════════════════════════════════════════
 // EVENTO: MENSAJES — formulario de entregas y menciones
 // ════════════════════════════════════════════════════════════════
-client.on(Events.MessageCreate, async (msg) => {
+onCtx(Events.MessageCreate, (msg) => msg.guildId, async (msg) => {
   if (msg.author.bot) return;
 
   // ── FORMULARIO DE ENTREGAS (4 pasos con explicación) ──
@@ -1991,7 +2042,7 @@ client.on(Events.MessageCreate, async (msg) => {
 // ════════════════════════════════════════════════════════════════
 // EVENTO: INTERACCIONES (botones y comandos slash)
 // ════════════════════════════════════════════════════════════════
-client.on(Events.InteractionCreate, async (interaction) => {
+onCtx(Events.InteractionCreate, (i) => i.guildId, async (interaction) => {
   const identificador = interaction.isChatInputCommand()
     ? `/${interaction.commandName}`
     : (interaction.customId || `tipo=${interaction.type}`);
@@ -3189,7 +3240,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
       case 'backup':
         await interaction.editReply('Guardando en Google Sheets...');
         await backupPuntos();
-        await interaction.editReply(`✅ Backup completado — ${puntos.size} alumnos guardados.`);
+        await interaction.editReply(`✅ Backup completado — ${puntos.todos().length} registros guardados.`);
         break;
 
       case 'mislogros': {
@@ -3370,7 +3421,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         });
         let qd;
         try { qd = JSON.parse(r.content[0].text.replace(/\`\`\`json|\`\`\`/g,'').trim()); } catch { await interaction.editReply('❌ Error generando pregunta.'); break; }
-        torneoActivo = { ...qd, respuestas: new Map(), cierra: Date.now() + 30000, canal: interaction.channelId };
+        torneoActivo = { ...qd, respuestas: new Map(), cierra: Date.now() + 30000, canal: interaction.channelId, guildId: interaction.guildId };
         setTimeout(() => { if (torneoActivo && Date.now() >= torneoActivo.cierra) cerrarPreguntaTorneo(); }, 30500);
         const botonesT = new ActionRowBuilder().addComponents(
           ...'ABCD'.split('').map(l => new ButtonBuilder().setCustomId(`torneo_${l}`).setLabel(l).setStyle(ButtonStyle.Secondary))
@@ -3426,7 +3477,7 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
         // Corregir el nombre en Google Sheets (asistencias de hoy)
         if (nombreViejo && nombreViejo !== nombreReal) {
-          actualizarNombreSheets(nombreViejo, nombreReal, fechaAR()).catch(()=>{});
+          actualizarNombreSheets([nombreViejo, interaction.member?.displayName, interaction.user.username], nombreReal, interaction.guild?.name).catch(()=>{});
         }
 
         guardarDatos();
@@ -3581,7 +3632,8 @@ client.on(Events.GuildMemberAdd, async (member) => {
 // FUNCIONES AUXILIARES — NUEVAS MEJORAS
 // ════════════════════════════════════════════════════════════════
 
-function detectarAlumnosEnRiesgo(guildId) {
+function detectarAlumnosEnRiesgo(guildId) { return als.run({ gid: guildId || null }, () => _detectarAlumnosEnRiesgo(guildId)); }
+function _detectarAlumnosEnRiesgo(guildId) {
   const totalCl = guildId ? (clasesTotales.get(guildId) || 0) : 0;
   const riesgo = [];
   for (const [uid, p] of puntos.entries()) {
@@ -3605,9 +3657,10 @@ function detectarAlumnosEnRiesgo(guildId) {
 }
 
 async function generarReporteSemanal(guild) {
+  als.enterWith({ gid: guild.id });
   const rank   = getRankingCompleto();
   const prom   = rank.length ? Math.round(rank.reduce((s,[,p])=>s+p.pts,0)/rank.length) : 0;
-  const riesgo = detectarAlumnosEnRiesgo();
+  const riesgo = detectarAlumnosEnRiesgo(guild.id);
   const sesion = getSesion(guild.id);
   const topPreguntas = sesion.preguntas.slice(-5).map(q => `• ${q.autor}: "${q.pregunta.substring(0,60)}"`).join('\n') || '• Sin preguntas registradas';
   return (
@@ -3625,6 +3678,7 @@ async function generarReporteSemanal(guild) {
 
 async function cerrarPreguntaTorneo() {
   if (!torneoActivo) return;
+  if (torneoActivo.guildId) als.enterWith({ gid: torneoActivo.guildId });
   const t = torneoActivo;
   torneoActivo = null;
   let msg = `⏱️ **Tiempo!** Respuesta correcta: **${t.correcta}**\n\n`;
