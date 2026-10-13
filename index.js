@@ -76,7 +76,7 @@ const MOODLE_URL_IES11   = 'https://ies11.aulasvirtuales.name';
 const PORT               = process.env.PORT || 3000;
 const CANAL_NOTICIAS     = 'noticias-tech';
 const COOLDOWN_SEG       = 30;
-const FORMULARIO_MS      = 10 * 60 * 1000; // 10 minutos
+const FORMULARIO_MS      = 30 * 60 * 1000; // 30 minutos
 
 // Seguridad y geocercas de asistencia. En Render conviene definir
 // PRESENCIA_SECRET con una cadena larga y aleatoria. Si falta, se usa
@@ -1185,6 +1185,40 @@ async function logErrorSheets(comando, error, guild) {
   } catch {} // no recursión si falla el logging
 }
 
+
+// ── ENTREGAS: registro en Google Sheets (pestaña "Entregas") y aviso al profesor ──
+async function guardarEntregaSheets(e) {
+  const fila = [[e.fecha, e.hora, e.nombre, e.actividad, e.servidor || '', e.canal || '', e.link || '', e.archivo || '', e.explicacion || '', e.comentario || '', e.reentrega ? 'Sí' : 'No']];
+  for (let intento = 1; intento <= 3; intento++) {
+    try {
+      const sheets = await getSheets();
+      try {
+        await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Entregas!A:K', valueInputOption: 'USER_ENTERED', resource: { values: fila } });
+      } catch (err) {
+        if (/Unable to parse range|not found/i.test(err?.message || '')) {
+          await sheets.spreadsheets.batchUpdate({ spreadsheetId: SPREADSHEET_ID, resource: { requests: [{ addSheet: { properties: { title: 'Entregas' } } }] } });
+          await sheets.spreadsheets.values.update({ spreadsheetId: SPREADSHEET_ID, range: 'Entregas!A1:K1', valueInputOption: 'USER_ENTERED',
+            resource: { values: [['Fecha','Hora','Alumno','Actividad','Servidor','Canal','Link/Mensaje','Archivo','Explicación','Comentario','Reentrega']] } });
+          await sheets.spreadsheets.values.append({ spreadsheetId: SPREADSHEET_ID, range: 'Entregas!A:K', valueInputOption: 'USER_ENTERED', resource: { values: fila } });
+        } else throw err;
+      }
+      return true;
+    } catch (err) {
+      LOG.error(`Error guardando entrega en Sheets (intento ${intento}/3)`, err);
+      if (intento < 3) await new Promise(r => setTimeout(r, 1000 * intento));
+    }
+  }
+  return false;
+}
+
+async function avisarProfesorEntrega(client_, e, sheetsOk) {
+  if (!PROFESOR_ID) return;
+  try {
+    const prof = await client_.users.fetch(PROFESOR_ID);
+    await prof.send(`📥 **Nueva entrega**${e.reentrega ? ' (reentrega)' : ''}\n👤 ${e.nombre}\n📚 ${e.actividad}\n🏫 ${e.servidor || '—'} · #${e.canal || '—'}\n🔗 ${e.link}\n${sheetsOk ? '' : '⚠️ No se pudo escribir en Google Sheets (quedó en el bot).'}`.substring(0, 1900));
+  } catch (err) { LOG.error('Error avisando entrega al profesor', err); }
+}
+
 function getNombreReal(userId, fallback) {
   const reg = registros.get(userId);
   return reg ? reg.nombreReal : fallback;
@@ -1782,87 +1816,119 @@ client.on(Events.MessageCreate, async (msg) => {
   if (msg.author.bot) return;
 
   // ── FORMULARIO DE ENTREGAS (4 pasos con explicación) ──
-  if (msg.channel.name.includes('entrega')) {
+  if (msg.channel?.name?.includes('entrega')) {
     const uid    = msg.author.id;
     const nombre = getNombreReal(uid, msg.member?.displayName || msg.author.username);
+    try {
+      const adjMsg = msg.attachments?.first();
 
-    if (formularioActivo.has(uid)) {
-      const form = formularioActivo.get(uid);
-      if (Date.now() > form.expira) {
-        formularioActivo.delete(uid);
-        await msg.reply('Se venció el tiempo del formulario. Escribí de nuevo para arrancar.');
-        return;
-      }
-      form.expira = Date.now() + FORMULARIO_MS;
+      if (formularioActivo.has(uid)) {
+        const form = formularioActivo.get(uid);
+        if (Date.now() > form.expira) {
+          formularioActivo.delete(uid);
+          await msg.reply('⏱️ Se venció el tiempo del formulario (30 min sin respuesta). Escribí de nuevo para arrancar.');
+          return;
+        }
+        form.expira = Date.now() + FORMULARIO_MS;
+        const texto = (msg.content || '').trim();
 
-      if (form.paso === 1) {
-        form.actividad = msg.content; form.paso = 2; formularioActivo.set(uid, form);
-        await msg.reply('📎 **Paso 2 de 4** — ¿Dónde está el trabajo?\n\nPegá el link (GitHub, Drive...) o adjuntá el archivo acá.\nSi no tenés link, escribí `sin link`.');
-        return;
-      }
+        if (form.paso === 1) {
+          if (!texto) { await msg.reply('Necesito el **nombre de la actividad** escrito (ej: "TP 3 – Docker"). Tu archivo ya lo guardé, lo pido en el próximo paso.'); return; }
+          form.actividad = texto; form.paso = 2;
+          if (adjMsg) { form.link = msg.url; form.archivo = adjMsg.name; form.fileSize = Math.round(adjMsg.size/1024) + ' KB'; }
+          await msg.reply(form.archivo
+            ? `📎 **Paso 2 de 4** — Ya recibí tu archivo **${form.archivo}**. Escribí \`ok\` para usarlo, o pegá un link / adjuntá otro archivo.`
+            : '📎 **Paso 2 de 4** — ¿Dónde está el trabajo?\n\nPegá el link (GitHub, Drive...) o adjuntá el archivo acá.\nSi no tenés link, escribí `sin link`.');
+          return;
+        }
 
-      if (form.paso === 2) {
-        const adj = msg.attachments.first();
-        if (adj) { form.link = adj.url; form.archivo = adj.name; form.fileSize = Math.round(adj.size/1024) + ' KB'; }
-        else { form.link = msg.content.toLowerCase() === 'sin link' ? 'Sin link' : msg.content; form.archivo = null; }
-        form.paso = 3; formularioActivo.set(uid, form);
-        await msg.reply('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
-        return;
-      }
+        if (form.paso === 2) {
+          if (adjMsg) { form.link = msg.url; form.archivo = adjMsg.name; form.fileSize = Math.round(adjMsg.size/1024) + ' KB'; }
+          else if (form.archivo && (!texto || /^(ok|listo|ese|si|sí)$/i.test(texto))) { /* conserva el archivo ya recibido */ }
+          else if (!texto) { await msg.reply('No vi ningún link ni archivo. Pegá el link, adjuntá el archivo o escribí `sin link`.'); return; }
+          else { form.link = texto.toLowerCase() === 'sin link' ? 'Sin link' : texto; form.archivo = null; }
+          form.paso = 3;
+          await msg.reply('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
+          return;
+        }
 
-      if (form.paso === 3) {
-        form.explicacion = msg.content; form.paso = 4; formularioActivo.set(uid, form);
-        await msg.reply('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
-        return;
-      }
+        if (form.paso === 3) {
+          if (!texto) { await msg.reply('Escribí unas líneas contando qué hiciste (puede ser breve).'); return; }
+          form.explicacion = texto; form.paso = 4;
+          await msg.reply('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
+          return;
+        }
 
-      if (form.paso === 4) {
-        form.comentario = msg.content.toLowerCase() === 'listo' ? '' : msg.content;
-        formularioActivo.delete(uid);
-        const archInfo = form.archivo
-          ? `📁 **Archivo:** ${form.archivo} (${form.fileSize})\n🔗 **Link:** ${form.link}`
-          : `🔗 **Link:** ${form.link}`;
-        await msg.channel.send(
-          `📋 **ENTREGA REGISTRADA**\n━━━━━━━━━━━━━━━━━━━━━━━━\n` +
-          `👤 **Alumno:** ${nombre}\n📚 **Actividad:** ${form.actividad}\n${archInfo}\n` +
-          `✍️ **Explicación:** ${form.explicacion.substring(0,200)}${form.explicacion.length>200?'…':''}\n` +
-          `${form.comentario ? `💬 **Comentario:** ${form.comentario}\n` : ''}` +
-          `━━━━━━━━━━━━━━━━━━━━━━━━`
-        );
-        // Guardar en historial — verificar si ya entregó ESTA actividad antes
-        if (!historial.has(uid)) historial.set(uid, []);
-        const histAlumno = historial.get(uid);
-        const yaEntrego = histAlumno.some(h => h.actividad.trim().toLowerCase() === form.actividad.trim().toLowerCase());
-        histAlumno.push({ actividad: form.actividad, fecha: fechaAR(), link: form.link, explicacion: form.explicacion.substring(0,500), comentario: form.comentario, reentrega: yaEntrego });
-        guardarDatos();
-        compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.explicacion} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
-        // Solo sumar puntos si es la PRIMERA vez que entrega esta actividad — evita farmear puntos reenviando
-        const p = yaEntrego ? (puntos.get(uid) || darPuntos(uid, nombre, 'entrega_sin_puntos')) : darPuntos(uid, nombre, 'entrega');
-        if (yaEntrego) LOG.info(`${nombre} reentregó "${form.actividad}" — no se sumaron puntos de nuevo`);
-        await actualizarRol(msg.member, p.pts, msg.channel);
-        try {
-          await msg.channel.sendTyping();
-          const textoCorr = `Actividad: ${form.actividad}\nExplicación del alumno: ${form.explicacion}\n${form.comentario ? `Consulta del alumno: ${form.comentario}` : ''}\n${form.link !== 'Sin link' ? `Link: ${form.link}` : ''}`;
-          const cor = await corregirEntrega(textoCorr, msg.guildId, msg.channel?.name);
-          if (cor) {
-            const evalInfo = colorEvaluacion(cor);
-            await msg.reply({ embeds: [{
-              title: `${evalInfo.emoji} Corrección de Mentor${evalInfo.nivel ? ' — ' + evalInfo.nivel : ''}`,
-              color: evalInfo.color,
-              description: safe(cor, 3800),
-              footer: { text: `⚠️ Orientativa — la nota final la define el profesor · +20 pts · Total: ${p.pts} pts` },
-            }] });
+        if (form.paso === 4) {
+          form.comentario = (texto.toLowerCase() === 'listo' || !texto) ? '' : texto;
+          // 1) GUARDAR PRIMERO (antes de cualquier mensaje que pueda fallar)
+          if (!historial.has(uid)) historial.set(uid, []);
+          const histAlumno = historial.get(uid);
+          const yaEntrego = histAlumno.some(h => (h.actividad || '').trim().toLowerCase() === form.actividad.trim().toLowerCase());
+          const registro = { actividad: form.actividad, fecha: fechaAR(), link: form.link, archivo: form.archivo || '', explicacion: form.explicacion.substring(0,500), comentario: form.comentario, reentrega: yaEntrego };
+          histAlumno.push(registro);
+          formularioActivo.delete(uid);
+          guardarDatos();
+          const datosSheets = { fecha: fechaAR(), hora: horaAR(), nombre, actividad: form.actividad, servidor: msg.guild?.name, canal: msg.channel.name, link: form.link, archivo: form.archivo, explicacion: form.explicacion, comentario: form.comentario, reentrega: yaEntrego };
+          const sheetsOk = await guardarEntregaSheets(datosSheets);
+          avisarProfesorEntrega(client, datosSheets, sheetsOk).catch(() => {});
+
+          // 2) Confirmación al alumno
+          const archInfo = form.archivo
+            ? `📁 **Archivo:** ${form.archivo} (${form.fileSize})\n🔗 **Mensaje con el archivo:** ${form.link}`
+            : `🔗 **Link:** ${form.link}`;
+          try {
+            await msg.channel.send(
+              `📋 **ENTREGA REGISTRADA**${yaEntrego ? ' (reentrega)' : ''}\n━━━━━━━━━━━━━━━━━━━━━━━━\n` +
+              `👤 **Alumno:** ${nombre}\n📚 **Actividad:** ${form.actividad}\n${archInfo}\n` +
+              `✍️ **Explicación:** ${form.explicacion.substring(0,200)}${form.explicacion.length>200?'…':''}\n` +
+              `${form.comentario ? `💬 **Comentario:** ${form.comentario}\n` : ''}` +
+              `━━━━━━━━━━━━━━━━━━━━━━━━`
+            );
+          } catch (e) { LOG.error('Error enviando confirmación de entrega', e); }
+
+          compararEntregas(msg.guild, form.actividad, nombre, uid, `${form.actividad} ${form.explicacion} ${form.comentario}`).catch(e => LOG.error('Error comparando entregas', e));
+          const p = yaEntrego ? (puntos.get(uid) || darPuntos(uid, nombre, 'entrega_sin_puntos')) : darPuntos(uid, nombre, 'entrega');
+          if (yaEntrego) LOG.info(`${nombre} reentregó "${form.actividad}" — no se sumaron puntos de nuevo`);
+          try { await actualizarRol(msg.member, p.pts, msg.channel); } catch (e) { LOG.error('Error actualizando rol tras entrega', e); }
+
+          // 3) Corrección IA (si falla, el alumno igual queda registrado y se lo decimos)
+          try {
+            await msg.channel.sendTyping();
+            const textoCorr = `Actividad: ${form.actividad}\nExplicación del alumno: ${form.explicacion}\n${form.comentario ? `Consulta del alumno: ${form.comentario}` : ''}\n${form.link !== 'Sin link' ? `Link: ${form.link}` : ''}`;
+            const cor = await corregirEntrega(textoCorr, msg.guildId, msg.channel?.name);
+            if (cor) {
+              const evalInfo = colorEvaluacion(cor);
+              await msg.channel.send({ content: `<@${uid}>`, embeds: [{
+                title: `${evalInfo.emoji} Corrección de Mentor${evalInfo.nivel ? ' — ' + evalInfo.nivel : ''}`,
+                color: evalInfo.color,
+                description: safe(cor, 3800),
+                footer: { text: `⚠️ Orientativa — la nota final la define el profesor · ${yaEntrego ? 'sin puntos por reentrega' : '+20 pts'} · Total: ${p.pts} pts` },
+              }] });
+            } else {
+              await msg.channel.send(`✅ <@${uid}> tu entrega quedó **registrada**. La corrección automática no estuvo disponible ahora; el profesor la revisa igual.`);
+            }
+          } catch (e) {
+            LOG.error('Error en corrección', e);
+            try { await msg.channel.send(`✅ <@${uid}> tu entrega quedó **registrada**. La corrección automática falló en este momento; el profesor la revisa igual.`); } catch {}
           }
-        } catch (e) { LOG.error('Error en corrección', e); }
-        return;
+          return;
+        }
       }
-    }
-    if (!formularioActivo.has(uid) && msg.content.length > 2) {
-      formularioActivo.set(uid, { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS });
-      await msg.reply(
-        `📝 Hola **${nombre}**\n\n**Paso 1 de 4** — ¿Cómo se llama la actividad o trabajo?` +
-        `${!registros.has(uid) ? '\n\n💡 Con /registrarme podés poner tu nombre real en el registro.' : ''}`
-      );
+      if (!formularioActivo.has(uid) && ((msg.content || '').trim().length > 2 || adjMsg)) {
+        const f = { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS };
+        if (adjMsg) { f.link = msg.url; f.archivo = adjMsg.name; f.fileSize = Math.round(adjMsg.size/1024) + ' KB'; }
+        formularioActivo.set(uid, f);
+        await msg.reply(
+          `📝 Hola **${nombre}**\n\n${adjMsg ? 'Recibí tu archivo ✅\n\n' : ''}**Paso 1 de 4** — ¿Cómo se llama la actividad o trabajo?` +
+          `${!registros.has(uid) ? '\n\n💡 Con /registrarme podés poner tu nombre real en el registro.' : ''}`
+        );
+      }
+    } catch (e) {
+      LOG.error('Error en flujo de entregas', e);
+      formularioActivo.delete(uid);
+      try { await msg.channel.send(`⚠️ <@${uid}> hubo un problema al procesar tu entrega. Volvé a escribir para empezar de nuevo; si se repite, avisale al profesor.`); } catch {}
+      if (PROFESOR_ID) { try { const prof = await client.users.fetch(PROFESOR_ID); await prof.send(`⚠️ Falló una entrega de **${nombre}** en #${msg.channel?.name}: ${(e?.message||e).toString().substring(0,300)}`); } catch {} }
     }
   }
 
