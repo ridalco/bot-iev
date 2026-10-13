@@ -384,10 +384,21 @@ let eventoCounter = 1;
 let torneoActivo  = null; // { pregunta, opciones, correcta, respuestas: Map, cierra: timestamp }
 const encuestas   = new Map(); // guildId → { pregunta, opciones, votos: Map, cierra, msgId, canal }
 
+let ESTADO_CARGA = 'ok'; // 'ok' | 'backup' | 'corrupto' — se informa al profesor al arrancar
+function leerJSONSeguro(ruta) {
+  try { return JSON.parse(fs.readFileSync(ruta, 'utf8')); } catch (e) { LOG.error('No se pudo leer ' + ruta, e); return null; }
+}
 function cargarDatos() {
   try {
     if (!fs.existsSync(DATA_FILE)) { LOG.warn('data.json no encontrado, arrancando vacío.'); return; }
-    const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+    let raw = leerJSONSeguro(DATA_FILE);
+    if (!raw) {
+      // Archivo principal ilegible: conservar copia del dañado y probar el backup
+      try { fs.copyFileSync(DATA_FILE, DATA_FILE + '.corrupto-' + Date.now()); } catch {}
+      if (fs.existsSync(DATA_FILE + '.bak')) raw = leerJSONSeguro(DATA_FILE + '.bak');
+      if (raw) { ESTADO_CARGA = 'backup'; LOG.warn('data.json dañado: se restauró desde data.json.bak'); }
+      else { ESTADO_CARGA = 'corrupto'; LOG.error('data.json dañado y sin backup válido. Arrancando vacío (copia del dañado conservada).'); return; }
+    }
     if (raw.puntos)  for (const [k, v] of Object.entries(raw.puntos))  puntos.set(k, v);
     if (raw.eventos) for (const [k, v] of Object.entries(raw.eventos)) eventos.set(parseInt(k), v);
     if (raw.tareas)  for (const [k, v] of Object.entries(raw.tareas))
@@ -402,6 +413,7 @@ function cargarDatos() {
     if (raw.anunciosActivos) for (const [k, v] of Object.entries(raw.anunciosActivos)) anunciosActivos.set(k, v);
     if (raw.anuncioCounter)  anuncioCounter = raw.anuncioCounter;
     if (raw.entregasPorActiv) for (const [k, v] of Object.entries(raw.entregasPorActiv)) entregasPorActiv.set(k, v);
+    if (raw.formularios) for (const [k, v] of Object.entries(raw.formularios)) if (v && v.expira > Date.now()) formularioActivo.set(k, v);
     if (raw.sesionActiva) {
       for (const [gid, s] of Object.entries(raw.sesionActiva)) {
         // Cerrar sesiones que quedaron activas de días anteriores (fantasma)
@@ -432,7 +444,8 @@ function guardarDatos() {
   if (_saveTimer) clearTimeout(_saveTimer);
   _saveTimer = setTimeout(() => {
     try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify({
+      const contenido = JSON.stringify({
+        formularios:  Object.fromEntries(formularioActivo),
         puntos:       Object.fromEntries(puntos),
         registros:    Object.fromEntries(registros),
         clasesTotales: Object.fromEntries(clasesTotales),
@@ -457,7 +470,12 @@ function guardarDatos() {
         tareas:       Object.fromEntries([...tareas.entries()].map(([k, v]) => [k, { ...v, completados: [...v.completados] }])),
         tareaCounter,
         eventoCounter,
-      }, null, 2));
+      }, null, 2);
+      // Escritura atómica: archivo temporal + backup del anterior + renombrado
+      const tmp = DATA_FILE + '.tmp';
+      fs.writeFileSync(tmp, contenido);
+      if (fs.existsSync(DATA_FILE)) { try { JSON.parse(fs.readFileSync(DATA_FILE, 'utf8')); fs.copyFileSync(DATA_FILE, DATA_FILE + '.bak'); } catch (e) { LOG.warn('No se pudo actualizar backup: ' + e.message); } }
+      fs.renameSync(tmp, DATA_FILE);
     } catch (e) { LOG.error('Error guardando datos', e); }
   }, 3000);
 }
@@ -470,6 +488,18 @@ const clasesTotales     = new Map(); // guildId → número de clases dictadas
 const notas             = new Map(); // userId → [{ materia, actividad, nota, fecha, guildId, observacion }]
 const anunciosActivos   = new Map(); // id → { materia, mensaje, fechaLimite, guildId, recordatorioEnviado, destinatarios: [] }
 let anuncioCounter      = 1;
+const ultimoAdjunto     = new Map(); // userId → { link, archivo, fileSize, ts } archivo subido antes de abrir el formulario
+const avisoEntrega      = new Map(); // userId → timestamp del último aviso con botón
+function esProfesorEstricto(uid) { return !!PROFESOR_ID && uid === PROFESOR_ID; }
+function iniciarFormularioEntrega(uid, nombre) {
+  const f = { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS };
+  const adj = ultimoAdjunto.get(uid);
+  if (adj && Date.now() - adj.ts < 15 * 60 * 1000) { f.link = adj.link; f.archivo = adj.archivo; f.fileSize = adj.fileSize; }
+  ultimoAdjunto.delete(uid);
+  formularioActivo.set(uid, f);
+  guardarDatos();
+  return f;
+}
 const formularioActivo  = new Map(); // userId  → { paso, nombre, actividad, link, comentario, expira }
 const cooldowns         = new Map(); // userId  → timestamp
 const quizActivo        = new Map(); // userId  → { pregunta, opciones, correcta, explicacion, unidad, respondido }
@@ -541,7 +571,7 @@ const SOLO_PROFESOR = new Set([
   'desafio','soluciones','cerrar-desafio','tarea','similitudes','backup','reporte','alumnos',
   'rubrica','generar-parcial','riesgo','torneo','qr-clase','encuesta','ver-codigo',
   'nota','notas-alumno','boletin-notas','anuncio','asignar-materia','exportar','cierre',
-  'asistencia-general','ajustar-asistencia','ver-ubicacion'
+  'asistencia-general','ajustar-asistencia','ver-ubicacion','entregas'
 ]);
 
 // ════════════════════════════════════════════════════════════════
@@ -1496,6 +1526,10 @@ const commands = [
   new SlashCommandBuilder().setName('mispuntos').setDescription('Ver tus puntos y posición'),
   new SlashCommandBuilder().setName('tarjeta').setDescription('🖼️ Ver tu tarjeta de rango como imagen'),
   new SlashCommandBuilder().setName('entrega').setDescription('Ver instrucciones para entregar trabajos'),
+  new SlashCommandBuilder().setName('entregar').setDescription('📤 Abrir el formulario para entregar un trabajo (usalo en #entregas)'),
+  new SlashCommandBuilder().setName('entregas').setDescription('👨‍🏫 Ver quién entregó una actividad y quién falta')
+    .addStringOption(o => o.setName('actividad').setDescription('Nombre (o parte) de la actividad. Vacío = lista de actividades').setRequired(false))
+    .addBooleanOption(o => o.setName('recordar').setDescription('Mandar DM de recordatorio a quienes no entregaron').setRequired(false)),
   new SlashCommandBuilder().setName('herramientas').setDescription('Links y herramientas del curso'),
   new SlashCommandBuilder().setName('tareas').setDescription('Ver todas las tareas activas'),
   new SlashCommandBuilder().setName('completar').setDescription('Marcar una tarea como completada').addIntegerOption(o => o.setName('id').setDescription('ID de la tarea').setRequired(true)),
@@ -1635,7 +1669,9 @@ client.once(Events.ClientReady, async (c) => {
   if (PROFESOR_ID) {
     try {
       const prof = await c.users.fetch(PROFESOR_ID);
-      await prof.send(`✅ **Mentor está en línea y listo.** Ya podés usar los comandos.\n🕐 ${ahoraAR()}`);
+      await prof.send(`✅ **Mentor está en línea y listo.** Ya podés usar los comandos.\n🕐 ${ahoraAR()}` +
+        (ESTADO_CARGA === 'backup' ? '\n\n⚠️ El archivo de datos estaba dañado: se restauró la copia de respaldo (puede faltar lo último guardado).' : '') +
+        (ESTADO_CARGA === 'corrupto' ? '\n\n🚨 El archivo de datos estaba dañado y no había respaldo válido: el bot arrancó VACÍO. Se conservó una copia del archivo dañado en el disco (data.json.corrupto-*).' : ''));
     } catch (e) { LOG.warn('No se pudo enviar DM de arranque: ' + e.message); }
   }
 
@@ -1689,6 +1725,8 @@ client.once(Events.ClientReady, async (c) => {
       if (horasRestantes <= 24 && horasRestantes > 0) {
         // Enviar recordatorio a destinatarios
         for (const uid of (anuncio.destinatarios || [])) {
+          const msgLower = (anuncio.mensaje || '').toLowerCase();
+          if ((historial.get(uid) || []).some(h => (h.actividad || '').trim().length >= 3 && msgLower.includes(h.actividad.trim().toLowerCase()))) continue;
           try {
             const u = await client.users.fetch(uid);
             await u.send('🔔 **Recordatorio de entrega**\n\nMañana vence:\n📚 ' + anuncio.mensaje.substring(0,120) + '\n\n📤 Entregalo en el canal #entregas de tu materia.\n_Si ya lo entregaste, ignorá este mensaje._');
@@ -1834,7 +1872,7 @@ client.on(Events.MessageCreate, async (msg) => {
 
         if (form.paso === 1) {
           if (!texto) { await msg.reply('Necesito el **nombre de la actividad** escrito (ej: "TP 3 – Docker"). Tu archivo ya lo guardé, lo pido en el próximo paso.'); return; }
-          form.actividad = texto; form.paso = 2;
+          form.actividad = texto; form.paso = 2; guardarDatos();
           if (adjMsg) { form.link = msg.url; form.archivo = adjMsg.name; form.fileSize = Math.round(adjMsg.size/1024) + ' KB'; }
           await msg.reply(form.archivo
             ? `📎 **Paso 2 de 4** — Ya recibí tu archivo **${form.archivo}**. Escribí \`ok\` para usarlo, o pegá un link / adjuntá otro archivo.`
@@ -1847,14 +1885,14 @@ client.on(Events.MessageCreate, async (msg) => {
           else if (form.archivo && (!texto || /^(ok|listo|ese|si|sí)$/i.test(texto))) { /* conserva el archivo ya recibido */ }
           else if (!texto) { await msg.reply('No vi ningún link ni archivo. Pegá el link, adjuntá el archivo o escribí `sin link`.'); return; }
           else { form.link = texto.toLowerCase() === 'sin link' ? 'Sin link' : texto; form.archivo = null; }
-          form.paso = 3;
+          form.paso = 3; guardarDatos();
           await msg.reply('✍️ **Paso 3 de 4** — Contame qué hiciste\n\nUnas líneas alcanza: qué desarrollaste, qué herramientas usaste, qué parte te costó.');
           return;
         }
 
         if (form.paso === 3) {
           if (!texto) { await msg.reply('Escribí unas líneas contando qué hiciste (puede ser breve).'); return; }
-          form.explicacion = texto; form.paso = 4;
+          form.explicacion = texto; form.paso = 4; guardarDatos();
           await msg.reply('💬 **Paso 4 de 4** — ¿Alguna duda o comentario? (opcional)\n\nEscribí lo que quieras o `listo` para terminar.');
           return;
         }
@@ -1865,7 +1903,7 @@ client.on(Events.MessageCreate, async (msg) => {
           if (!historial.has(uid)) historial.set(uid, []);
           const histAlumno = historial.get(uid);
           const yaEntrego = histAlumno.some(h => (h.actividad || '').trim().toLowerCase() === form.actividad.trim().toLowerCase());
-          const registro = { actividad: form.actividad, fecha: fechaAR(), link: form.link, archivo: form.archivo || '', explicacion: form.explicacion.substring(0,500), comentario: form.comentario, reentrega: yaEntrego };
+          const registro = { actividad: form.actividad, fecha: fechaAR(), link: form.link, archivo: form.archivo || '', explicacion: form.explicacion.substring(0,500), comentario: form.comentario, reentrega: yaEntrego, guildId: msg.guildId };
           histAlumno.push(registro);
           formularioActivo.delete(uid);
           guardarDatos();
@@ -1915,14 +1953,18 @@ client.on(Events.MessageCreate, async (msg) => {
           return;
         }
       }
-      if (!formularioActivo.has(uid) && ((msg.content || '').trim().length > 2 || adjMsg)) {
-        const f = { paso:1, nombre, actividad:'', link:'', archivo:null, fileSize:null, explicacion:'', comentario:'', expira: Date.now() + FORMULARIO_MS };
-        if (adjMsg) { f.link = msg.url; f.archivo = adjMsg.name; f.fileSize = Math.round(adjMsg.size/1024) + ' KB'; }
-        formularioActivo.set(uid, f);
-        await msg.reply(
-          `📝 Hola **${nombre}**\n\n${adjMsg ? 'Recibí tu archivo ✅\n\n' : ''}**Paso 1 de 4** — ¿Cómo se llama la actividad o trabajo?` +
-          `${!registros.has(uid) ? '\n\n💡 Con /registrarme podés poner tu nombre real en el registro.' : ''}`
-        );
+      // Sin formulario abierto: NO se arranca solo. Se ofrece un botón (una vez cada 5 min) si el mensaje parece una entrega.
+      if (!formularioActivo.has(uid) && !esProfesorEstricto(uid)) {
+        const txt = (msg.content || '');
+        const parece = adjMsg || /https?:\/\//i.test(txt) || /entreg|\btp\b|trabajo|pr[aá]ctic|actividad|tarea|adjunt|consign|termin|hice/i.test(txt);
+        if (adjMsg) ultimoAdjunto.set(uid, { link: msg.url, archivo: adjMsg.name, fileSize: Math.round(adjMsg.size/1024) + ' KB', ts: Date.now() });
+        if (parece && Date.now() - (avisoEntrega.get(uid) || 0) > 5 * 60 * 1000) {
+          avisoEntrega.set(uid, Date.now());
+          await msg.reply({
+            content: `👋 **${nombre}**, ¿querés entregar un trabajo?${adjMsg ? ' Ya guardé tu archivo.' : ''}\nApretá el botón para abrir el formulario (también podés usar \`/entregar\`).`,
+            components: [{ type: 1, components: [{ type: 2, style: 3, label: '📤 Entregar trabajo', custom_id: 'entregar_iniciar' }] }],
+          });
+        }
       }
     } catch (e) {
       LOG.error('Error en flujo de entregas', e);
@@ -2044,6 +2086,15 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
 
   // ── BOTÓN: Presente ──
   // ── BOTÓN: Registrar presencia GPS — genera link personalizado con UID real ──
+  if (interaction.isButton() && interaction.customId === 'entregar_iniciar') {
+    const uid = interaction.user.id;
+    const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+    if (formularioActivo.has(uid)) { await interaction.reply({ content: 'Ya tenés un formulario abierto: seguí respondiendo en este canal.', ephemeral: true }); return; }
+    const f = iniciarFormularioEntrega(uid, nombre);
+    await interaction.reply({ content: `📝 **Paso 1 de 4** — Escribí en este canal el **nombre de la actividad o trabajo**.${f.archivo ? `\n📎 Ya tengo tu archivo **${f.archivo}**.` : ''}`, ephemeral: true });
+    return;
+  }
+
   if (interaction.isButton() && interaction.customId === 'gps_link') {
     const sesion = getSesion(interaction.guildId);
     if (!sesion.activa) { await interaction.reply({ content: 'La clase ya terminó.', ephemeral: true }); return; }
@@ -2366,8 +2417,58 @@ ${resumen} · Total: **${total}**`, ephemeral: true });
         break;
       }
 
+      case 'entregar': {
+        if (!interaction.channel?.name?.includes('entrega')) { await interaction.editReply('Usá este comando en el canal **#entregas** de tu materia.'); break; }
+        const uid = interaction.user.id;
+        const nombre = getNombreReal(uid, interaction.member?.displayName || interaction.user.username);
+        if (formularioActivo.has(uid)) { await interaction.editReply('Ya tenés un formulario abierto: seguí respondiendo en este canal.'); break; }
+        const f = iniciarFormularioEntrega(uid, nombre);
+        await interaction.editReply(`📝 Hola **${nombre}**\n\n**Paso 1 de 4** — Escribí en este canal el **nombre de la actividad o trabajo**.${f.archivo ? `\n📎 Ya tengo tu archivo **${f.archivo}**.` : ''}`);
+        break;
+      }
+
+      case 'entregas': {
+        const filtro = (interaction.options.getString('actividad') || '').trim().toLowerCase();
+        const recordar = interaction.options.getBoolean('recordar') || false;
+        const miembros = await interaction.guild.members.fetch().catch(() => interaction.guild.members.cache);
+        const alumnos = [...miembros.values()].filter(m => !m.user.bot && !esProfesorEstricto(m.id));
+        const idsAlumnos = new Set(alumnos.map(m => m.id));
+        // Entregas de los alumnos de ESTE servidor (las nuevas llevan guildId; las viejas se asignan por pertenecer al servidor)
+        const todas = [];
+        for (const [uid, lista] of historial.entries()) {
+          if (!idsAlumnos.has(uid)) continue;
+          for (const h of lista) if (!h.guildId || h.guildId === interaction.guildId) todas.push({ uid, ...h });
+        }
+        if (!filtro) {
+          const grupos = new Map();
+          for (const h of todas) { const k = (h.actividad || '').trim().toLowerCase(); if (!grupos.has(k)) grupos.set(k, { nombre: h.actividad, uids: new Set() }); grupos.get(k).uids.add(h.uid); }
+          if (!grupos.size) { await interaction.editReply('Todavía no hay entregas registradas en este servidor.'); break; }
+          const lineas = [...grupos.values()].sort((a,b) => b.uids.size - a.uids.size).slice(0, 25).map(g => `• **${g.nombre}** — ${g.uids.size}/${alumnos.length} entregaron`);
+          await interaction.editReply(safe(`📥 **Actividades con entregas** (${interaction.guild.name})\n\n${lineas.join('\n')}\n\nUsá \`/entregas actividad:<nombre>\` para ver el detalle y quién falta.`));
+          break;
+        }
+        const coinc = todas.filter(h => (h.actividad || '').toLowerCase().includes(filtro));
+        const entregaron = new Map(); // uid → última entrega
+        for (const h of coinc) entregaron.set(h.uid, h);
+        const faltan = alumnos.filter(m => !entregaron.has(m.id));
+        const nombreDe = (uid) => getNombreReal(uid, miembros.get?.(uid)?.displayName || uid);
+        const ok = [...entregaron.entries()].map(([uid, h]) => `✅ ${nombreDe(uid)} — ${h.fecha}${h.reentrega ? ' (reentrega)' : ''}`);
+        const no = faltan.map(m => `❌ ${getNombreReal(m.id, m.displayName)}`);
+        let extra = '';
+        if (recordar && faltan.length) {
+          let enviados = 0;
+          for (const m of faltan) {
+            try { await m.send(`🔔 **Recordatorio de entrega**\n\nTodavía no figura tu entrega de: **${interaction.options.getString('actividad')}**\n📤 Entregala en el canal #entregas de tu materia (botón *Entregar trabajo* o \`/entregar\`).\n_Si ya la entregaste con otro nombre de actividad, avisale al profesor._`); enviados++; } catch {}
+            await new Promise(r => setTimeout(r, 400));
+          }
+          extra = `\n\n📨 Recordatorio enviado por DM a ${enviados}/${faltan.length} (los que tienen DMs cerrados no lo reciben).`;
+        }
+        await interaction.editReply(safe(`📥 **Entregas de "${interaction.options.getString('actividad')}"** — ${entregaron.size} entregaron · ${faltan.length} faltan\n\n**Entregaron:**\n${ok.join('\n') || '—'}\n\n**Faltan:**\n${no.join('\n') || '—'}${extra}\n\n_La lista de "faltan" incluye a todos los miembros del servidor que no son bots ni el profesor._`));
+        break;
+      }
+
       case 'entrega':
-        await interaction.editReply('Para entregar un trabajo:\n\n1. Andá al canal **#entregas** de tu materia\n2. Escribí cualquier mensaje para abrir el formulario\n3. Seguí los 4 pasos\n4. Recibirás una corrección automática como orientación\n\nNo se aceptan entregas por WhatsApp o mensajes privados.');
+        await interaction.editReply('Para entregar un trabajo:\n\n1. Andá al canal **#entregas** de tu materia\n2. Apretá el botón **📤 Entregar trabajo** (o usá `/entregar`) para abrir el formulario\n3. Seguí los 4 pasos\n4. Recibirás una corrección automática como orientación\n\nNo se aceptan entregas por WhatsApp o mensajes privados.');
         break;
 
       case 'herramientas':
